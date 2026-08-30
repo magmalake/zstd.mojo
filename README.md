@@ -100,20 +100,25 @@ pixi run bench       # 64 MiB compressible + random buffers, a few levels
 
 Indicative numbers, one M-series macOS core, `pixi run -e stable bench`:
 
-| data         | level | compress   | decompress | ratio  |
-|--------------|-------|-----------:|-----------:|-------:|
-| compressible |     1 | ~1.4 GB/s  | ~1.5 GB/s  | 10824x |
-| compressible |     3 | ~3.3 GB/s  | ~7.6 GB/s  | 10824x |
-| compressible |     9 | ~0.7 GB/s  | ~2.7 GB/s  |   747x |
-| compressible |    19 | ~0.5 GB/s  | ~10.4 GB/s |  11792x |
-| random       |     1 | ~2.5 GB/s  | ~14.1 GB/s |   ~1.0x |
-| random       |     3 | ~1.6 GB/s  | ~9.9 GB/s  |   ~1.0x |
-| random       |     9 | ~1.3 GB/s  | ~11.9 GB/s |   ~1.0x |
+| data         | level | compress    | decompress  | ratio  |
+|--------------|-------|------------:|------------:|-------:|
+| compressible |     1 | ~10.2 GB/s  | ~7.4 GB/s   | 10824x |
+| compressible |     3 | ~12.0 GB/s  | ~10.8 GB/s  | 10824x |
+| compressible |     9 | ~2.1 GB/s   | ~11.6 GB/s  |   747x |
+| compressible |    19 | ~2.1 GB/s   | ~19.8 GB/s  |  11792x |
+| random       |     1 | ~7.7 GB/s   | ~31.9 GB/s  |  ~1.0x |
+| random       |     3 | ~10.0 GB/s  | ~32.1 GB/s  |  ~1.0x |
+| random       |     9 | ~5.4 GB/s   | ~31.3 GB/s  |  ~1.0x |
 
-Numbers vary run to run (the one-shot `compress()`/`decompress()` API
-`dlopen`s the shim on every call — fine for Parquet-page-sized buffers, but
-don't use it in a hot per-call loop; use `Compressor`/`Decompressor` to
-amortize that cost instead). Re-run `pixi run bench` for your own hardware.
+Numbers vary run to run; re-run `pixi run bench` for your own hardware.
+
+The shim is `dlopen`ed **once per process** and never closed, so the one-shot
+`compress()`/`decompress()` calls are safe in a hot loop. They did not used to
+be: through 0.1.0 every call opened and closed the handle, which on macOS costs
+around 450 µs whether the library is already resident or not. That fixed cost
+swamped the actual work on anything page-sized — a 24 MiB ZSTD Parquet file
+(332 pages) spent ~150 ms in `dlopen` and ~25 ms decompressing. Caching the
+handle took the fixed cost of a call from ~415 µs to ~1.4 µs.
 
 ## How the shim is built
 

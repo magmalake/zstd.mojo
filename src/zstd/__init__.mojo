@@ -3,21 +3,24 @@ shim (libzstdmojo.so).
 
 Mirrors zlib.mojo's FFI pattern: a single-call C wrapper (shim/zstd_wrapper.c,
 built to $CONDA_PREFIX/lib/libzstdmojo.so by the zstd-shim pixi package) is
-loaded through an `OwnedDLHandle`. Every FFI-calling worker takes that handle
-as a BORROWED `imm` parameter — Mojo destroys a value at its last syntactic
-use, and if a function both owned the handle *and* called `get_function` on
-it, that call would be the last use, `dlclose`-ing the library before the
-obtained function pointer is actually invoked a few lines later. Splitting
-"own the handle" (the public entry point) from "use the handle" (a `_do_*`
-worker that takes it by `imm` borrow) keeps the caller's copy alive for the
-whole worker call, function-pointer invocation included.
+loaded through an `OwnedDLHandle`. The handle is opened **once per process**
+and never closed (`_LIB` below) — a `dlopen`/`dlclose` cycle costs hundreds of
+microseconds, so opening one per call made the binding's fixed cost dwarf the
+compression it wrapped. Every FFI-calling worker takes the handle as a
+BORROWED `imm` parameter — Mojo destroys a value at its last syntactic use,
+and if a function both owned the handle *and* called `get_function` on it,
+that call would be the last use, `dlclose`-ing the library before the obtained
+function pointer is actually invoked a few lines later. Splitting "hold the
+handle" (`_lib()`) from "use the handle" (a `_do_*` worker that takes it by
+`imm` borrow) keeps it alive for the whole worker call, function-pointer
+invocation included.
 
 zstd is Apache Iceberg's default Parquet codec, a Puffin blob codec, and an
 Avro codec — this binding targets that headline use as a magmalake leaf tin.
 """
 
-from std.os import getenv
-from std.ffi import OwnedDLHandle, c_int, c_long_long, c_size_t
+from std.os import abort, getenv
+from std.ffi import _Global, OwnedDLHandle, c_int, c_long_long, c_size_t
 
 
 comptime _CONTINUE = 0
@@ -35,6 +38,35 @@ def _find_lib() -> String:
     out += prefix
     out += "/lib/libzstdmojo.so"
     return out^
+
+
+def _open_lib() -> OwnedDLHandle:
+    """`dlopen` the shim, once, for the life of the process."""
+    try:
+        return OwnedDLHandle(_find_lib())
+    except e:
+        abort(String("zstd.mojo: ", e))
+
+
+comptime _LIB = _Global["zstd_mojo_shim", _open_lib]
+"""The shim handle, opened on first use and never closed.
+
+`dlopen`/`dlclose` is not free — on macOS a full open/close cycle of an
+already-resident library measures around 450 microseconds, which is three
+orders of magnitude more than decompressing a Parquet page. Opening the
+handle per call therefore made the *fixed* cost of a `decompress` dominate
+every real workload: a 24 MiB ZSTD Parquet read spends ~150 ms in `dlopen`
+and ~10 ms decompressing. One process-wide handle removes all of it, and
+`dlsym` on the cached handle costs ~400 ns.
+
+`_Global` initialises exactly once even under concurrent first use, so the
+handle is safe to reach from worker threads.
+"""
+
+
+def _lib() raises -> ref[MutUntrackedOrigin] OwnedDLHandle:
+    """The cached handle, borrowed. Never destroy the referent."""
+    return _LIB.get_or_create_ptr()[]
 
 
 def _error_name(imm lib: OwnedDLHandle, code: UInt) raises -> String:
@@ -91,7 +123,7 @@ def compress(data: Span[UInt8, _], level: Int = 3) raises -> List[UInt8]:
 
     Zero-length `data` is a real (if degenerate) case for zstd — it still
     produces a valid, tiny frame that decompresses back to zero bytes."""
-    var lib = OwnedDLHandle(_find_lib())
+    ref lib = _lib()
     return _do_compress(lib, data, c_int(level))
 
 
@@ -132,7 +164,7 @@ def decompress(data: Span[UInt8, _]) raises -> List[UInt8]:
     """
     if len(data) == 0:
         return List[UInt8]()
-    var lib = OwnedDLHandle(_find_lib())
+    ref lib = _lib()
     var size = _do_frame_content_size(lib, data)
     if size >= 0:
         return _do_decompress_known(lib, data, size)
@@ -166,7 +198,7 @@ def decompress_into(
     `dst` is too small or `data` is not a valid frame."""
     if len(data) == 0:
         return 0
-    var lib = OwnedDLHandle(_find_lib())
+    ref lib = _lib()
     return _do_decompress_into(lib, data, dst)
 
 
@@ -195,7 +227,7 @@ def frame_content_size(data: Span[UInt8, _]) raises -> Optional[Int]:
     (e.g. streamed with an unset pledged size)."""
     if not is_zstd_frame(data):
         return None
-    var lib = OwnedDLHandle(_find_lib())
+    ref lib = _lib()
     var size = _do_frame_content_size(lib, data)
     if size < 0:
         return None
@@ -212,24 +244,22 @@ struct Compressor(Movable):
     `ZSTD_CStream`). Feed chunks to `update()`; call `finish()` once at the
     end to flush the trailing block and frame epilogue."""
 
-    var _lib: OwnedDLHandle
     var _cctx: Int
 
     def __init__(out self, level: Int = 3) raises:
-        self._lib = OwnedDLHandle(_find_lib())
-        var create_fn = self._lib.get_function[Int]("zstdm_create_cctx")
+        var create_fn = _lib().get_function[Int]("zstdm_create_cctx")
         self._cctx = create_fn()
         if self._cctx == 0:
             raise Error("zstd.Compressor: ZSTD_createCCtx failed")
-        var level_fn = self._lib.get_function[c_size_t](
+        var level_fn = _lib().get_function[c_size_t](
             "zstdm_cctx_set_level"
         )
         var rc = level_fn(self._cctx, c_int(level))
-        _check(self._lib, rc, "zstd.Compressor(level)")
+        _check(_lib(), rc, "zstd.Compressor(level)")
 
     def __deinit__(deinit self):
         try:
-            var free_fn = self._lib.get_function[c_size_t](
+            var free_fn = _lib().get_function[c_size_t](
                 "zstdm_free_cctx"
             )
             _ = free_fn(self._cctx)
@@ -239,7 +269,7 @@ struct Compressor(Movable):
     def _drive(mut self, chunk: Span[UInt8, _], end_op: Int) raises -> List[
         UInt8
     ]:
-        var stream_fn = self._lib.get_function[c_size_t](
+        var stream_fn = _lib().get_function[c_size_t](
             "zstdm_compress_stream2"
         )
 
@@ -266,7 +296,7 @@ struct Compressor(Movable):
                 Int(dst_pos.unsafe_ptr()),
                 c_int(end_op),
             )
-            _check(self._lib, rc, "zstd.Compressor")
+            _check(_lib(), rc, "zstd.Compressor")
             written += Int(dst_pos[0])
             dst_pos[0] = 0
 
@@ -300,19 +330,17 @@ struct Decompressor(Movable):
     separate flush step, so `finish()` is a no-op kept for API symmetry with
     `Compressor`."""
 
-    var _lib: OwnedDLHandle
     var _dctx: Int
 
     def __init__(out self) raises:
-        self._lib = OwnedDLHandle(_find_lib())
-        var create_fn = self._lib.get_function[Int]("zstdm_create_dctx")
+        var create_fn = _lib().get_function[Int]("zstdm_create_dctx")
         self._dctx = create_fn()
         if self._dctx == 0:
             raise Error("zstd.Decompressor: ZSTD_createDCtx failed")
 
     def __deinit__(deinit self):
         try:
-            var free_fn = self._lib.get_function[c_size_t](
+            var free_fn = _lib().get_function[c_size_t](
                 "zstdm_free_dctx"
             )
             _ = free_fn(self._dctx)
@@ -322,7 +350,7 @@ struct Decompressor(Movable):
     def update(mut self, chunk: Span[UInt8, _]) raises -> List[UInt8]:
         """Decompresses as much of `chunk` as libzstd will take in one pass,
         growing the output buffer until all of `chunk` is consumed."""
-        var stream_fn = self._lib.get_function[c_size_t](
+        var stream_fn = _lib().get_function[c_size_t](
             "zstdm_decompress_stream"
         )
 
@@ -348,7 +376,7 @@ struct Decompressor(Movable):
                 c_size_t(cap - written),
                 Int(dst_pos.unsafe_ptr()),
             )
-            _check(self._lib, rc, "zstd.Decompressor")
+            _check(_lib(), rc, "zstd.Decompressor")
             written += Int(dst_pos[0])
             dst_pos[0] = 0
 
