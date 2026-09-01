@@ -16,6 +16,14 @@ zstd is Apache Iceberg's default Parquet codec, a Puffin blob codec, and an
 Avro codec — that's the headline use this binding targets. It wraps the real
 libzstd (conda-forge's `zstd` package); a pure-Mojo zstd is out of scope.
 
+## Install
+
+```sh
+pixi shelf add zstd-mojo
+```
+
+That resolves the tin from [mojoshelf](https://mojoshelf.org) and adds it — along with the tins it depends on — as **pixi git source dependencies**. magmalake tins are not published to a conda channel, so `pixi add zstd-mojo` will not find them.
+
 ## Prerequisites
 
 - [pixi](https://pixi.sh)
