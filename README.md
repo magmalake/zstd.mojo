@@ -105,22 +105,42 @@ and a corrupt frame raising.
 ## Perf
 
 ```sh
-pixi run bench       # 64 MiB compressible + random buffers, a few levels
+pixi run -e bench bench                 # the table below
+pixi run -e bench bench -- --json       # every repetition, for tracking
+pixi run -e bench bench -- --only bench_compress_random_9
 ```
 
-Indicative numbers, one M-series macOS core, `pixi run -e stable bench`:
+One M-series macOS core, 64 MiB per shape, through
+[bench.mojo](https://github.com/magmalake/bench.mojo) — mean of three timed
+repetitions, spread under 1% on every row:
 
 | data         | level | compress    | decompress  | ratio  |
 |--------------|-------|------------:|------------:|-------:|
-| compressible |     1 | ~10.2 GB/s  | ~7.4 GB/s   | 10824x |
-| compressible |     3 | ~12.0 GB/s  | ~10.8 GB/s  | 10824x |
-| compressible |     9 | ~2.1 GB/s   | ~11.6 GB/s  |   747x |
-| compressible |    19 | ~2.1 GB/s   | ~19.8 GB/s  |  11792x |
-| random       |     1 | ~7.7 GB/s   | ~31.9 GB/s  |  ~1.0x |
-| random       |     3 | ~10.0 GB/s  | ~32.1 GB/s  |  ~1.0x |
-| random       |     9 | ~5.4 GB/s   | ~31.3 GB/s  |  ~1.0x |
+| compressible |     1 | 20.5 GB/s   | 11.2 GB/s   | 10824x |
+| compressible |     3 | 13.0 GB/s   | 11.3 GB/s   | 10824x |
+| compressible |     9 | 2.12 GB/s   | 12.0 GB/s   |   747x |
+| compressible |    19 | 2.18 GB/s   | 22.3 GB/s   | 11792x |
+| random       |     1 | 9.54 GB/s   | 33.3 GB/s   |  ~1.0x |
+| random       |     3 | 10.3 GB/s   | 33.3 GB/s   |  ~1.0x |
+| random       |     9 | 5.79 GB/s   | 33.5 GB/s   |  ~1.0x |
 
-Numbers vary run to run; re-run `pixi run bench` for your own hardware.
+Rates are against the **uncompressed** size in both directions, so every
+level shares a scale. Level 19 costs barely more than level 9 *on this
+input*, because it compresses about 11,800x and the expensive search finds a
+match almost immediately — that is a property of the synthetic buffer, not a
+general claim about level 19.
+
+**What these numbers measure.** This tin is a binding, not an
+implementation: the compression is libzstd's, reached through the C shim
+below. So the table measures libzstd plus the cost of crossing the FFI
+boundary, which at 64 MiB per call is noise. It is not a measurement of Mojo
+code — the Mojo here is 394 lines of binding, and the only part of it these
+numbers can indict is per-call overhead, which is the subject of the next
+paragraph.
+
+Figures published before 2026-09-01 were single cold passes and ran lower on
+the fast rows (compressible level 1 read ~10.2 GB/s against 20.5 here); at
+3 ms per pass, building and first-touching the buffer dominated them.
 
 The shim is `dlopen`ed **once per process** and never closed, so the one-shot
 `compress()`/`decompress()` calls are safe in a hot loop. They did not used to
