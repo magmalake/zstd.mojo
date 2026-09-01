@@ -22,6 +22,8 @@ libzstd (conda-forge's `zstd` package); a pure-Mojo zstd is out of scope.
 pixi shelf add zstd-mojo
 ```
 
+Working with a coding agent? `npx skills add mojoshelf/mojoshelf --skill mojoshelf-consume --yes` teaches it to find and install tins itself — it installs the `shelf` CLI too.
+
 That resolves the tin from [mojoshelf](https://mojoshelf.org) and adds it — along with the tins it depends on — as **pixi git source dependencies**. magmalake tins are not published to a conda channel, so `pixi add zstd-mojo` will not find them.
 
 ## Prerequisites
