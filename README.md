@@ -124,6 +124,13 @@ repetitions, spread under 1% on every row:
 | random       |     3 | 10.3 GB/s   | 33.3 GB/s   |  ~1.0x |
 | random       |     9 | 5.79 GB/s   | 33.5 GB/s   |  ~1.0x |
 
+Every push to `main` re-runs these on a GitHub runner and appends to a history
+published at
+[magmalake.github.io/zstd.mojo/benchmarks](https://magmalake.github.io/zstd.mojo/benchmarks/).
+Those numbers are slower and noisier than the table above, which was taken on
+an M4 — each history is keyed by machine, so the two stay separate series and
+are never averaged together.
+
 Rates are against the **uncompressed** size in both directions, so every
 level shares a scale. Level 19 costs barely more than level 9 *on this
 input*, because it compresses about 11,800x and the expensive search finds a
