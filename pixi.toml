@@ -69,7 +69,7 @@ mojo-compiler = "==1.0.0"
 bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "4f4440fa6e61c9ca7c7573ca6aa2f8f1d606d88a" }
 
 [feature.bench.tasks]
-bench = "mojo run -I src -I $CONDA_PREFIX/lib/mojo bench/bench_zstd.mojo"
+bench = "mkdir -p build && mojo build -I src -I $CONDA_PREFIX/lib/mojo bench/bench_zstd.mojo -o build/bench-zstd && ./build/bench-zstd"
 # bench/ imports the shared harness by source path (mojolint needs real
 # sources to resolve, not the precompiled package bench-mojo installs above).
 lint-bench = { cmd = "mojolint --lsp -I src -I ../bench.mojo/src bench" }
