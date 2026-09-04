@@ -2,7 +2,7 @@
 authors = ["Marius S <39998+winding-lines@users.noreply.github.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "zstd.mojo"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Mojo binding to libzstd (one-shot and streaming compress/decompress) via FFI."
 preview = ["pixi-build"]
 platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
@@ -34,7 +34,7 @@ lint = { cmd = "mojolint --lsp -I src src test" }
 # stays `from zstd import …`.
 [package]
 name = "zstd-mojo"
-version = "0.1.1"
+version = "0.1.2"
 
 [package.build]
 backend = { name = "pixi-build-mojo", version = "0.*" }

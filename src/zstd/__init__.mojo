@@ -78,7 +78,7 @@ def _error_name(imm lib: OwnedDLHandle, code: UInt) raises -> String:
     var addr = name_fn(code)
     if addr == 0:
         return String("<unknown zstd error>")
-    var p = UnsafePointer[UInt8, ImmUntrackedOrigin](
+    var p = Pointer[UInt8, ImmUntrackedOrigin](
         unsafe_from_address=addr
     )
     return String(unsafe_from_utf8_ptr=p)
