@@ -44,11 +44,10 @@ def bench_compress_compressible_1(mut b: Benchmark) raises:
     var data = _compressible(SIZE)
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm data}:
         keep(compress(Span(data), 1))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
 
 
@@ -58,11 +57,10 @@ def bench_decompress_compressible_1(mut b: Benchmark) raises:
     # Against the uncompressed size, so every level shares a scale.
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm comp}:
         keep(decompress(comp))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
     keep(comp)
 
@@ -71,11 +69,10 @@ def bench_compress_compressible_3(mut b: Benchmark) raises:
     var data = _compressible(SIZE)
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm data}:
         keep(compress(Span(data), 3))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
 
 
@@ -85,11 +82,10 @@ def bench_decompress_compressible_3(mut b: Benchmark) raises:
     # Against the uncompressed size, so every level shares a scale.
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm comp}:
         keep(decompress(comp))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
     keep(comp)
 
@@ -98,11 +94,10 @@ def bench_compress_compressible_9(mut b: Benchmark) raises:
     var data = _compressible(SIZE)
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm data}:
         keep(compress(Span(data), 9))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
 
 
@@ -112,11 +107,10 @@ def bench_decompress_compressible_9(mut b: Benchmark) raises:
     # Against the uncompressed size, so every level shares a scale.
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm comp}:
         keep(decompress(comp))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
     keep(comp)
 
@@ -125,11 +119,10 @@ def bench_compress_compressible_19(mut b: Benchmark) raises:
     var data = _compressible(SIZE)
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm data}:
         keep(compress(Span(data), 19))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
 
 
@@ -139,11 +132,10 @@ def bench_decompress_compressible_19(mut b: Benchmark) raises:
     # Against the uncompressed size, so every level shares a scale.
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm comp}:
         keep(decompress(comp))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
     keep(comp)
 
@@ -152,11 +144,10 @@ def bench_compress_random_1(mut b: Benchmark) raises:
     var data = _random(SIZE)
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm data}:
         keep(compress(Span(data), 1))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
 
 
@@ -166,11 +157,10 @@ def bench_decompress_random_1(mut b: Benchmark) raises:
     # Against the uncompressed size, so every level shares a scale.
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm comp}:
         keep(decompress(comp))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
     keep(comp)
 
@@ -179,11 +169,10 @@ def bench_compress_random_3(mut b: Benchmark) raises:
     var data = _random(SIZE)
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm data}:
         keep(compress(Span(data), 3))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
 
 
@@ -193,11 +182,10 @@ def bench_decompress_random_3(mut b: Benchmark) raises:
     # Against the uncompressed size, so every level shares a scale.
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm comp}:
         keep(decompress(comp))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
     keep(comp)
 
@@ -206,11 +194,10 @@ def bench_compress_random_9(mut b: Benchmark) raises:
     var data = _random(SIZE)
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm data}:
         keep(compress(Span(data), 9))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
 
 
@@ -220,11 +207,10 @@ def bench_decompress_random_9(mut b: Benchmark) raises:
     # Against the uncompressed size, so every level shares a scale.
     b.throughput(Metric.bytes(), SIZE)
 
-    @parameter
-    def call() raises:
+    def call() raises {imm comp}:
         keep(decompress(comp))
 
-    b.iter[call]()
+    b.iter(call)
     keep(data)
     keep(comp)
 
