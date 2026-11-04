@@ -55,9 +55,14 @@ Build a consumer with this package on the import path:
 mojo build your.mojo -I ../zstd.mojo/src -o your-bin
 ```
 
-`_find_lib()` resolves the shim at `$CONDA_PREFIX/lib/libzstdmojo.so` (or
-`build/` for a bare checkout). For distribution, bundle `libzstdmojo.so`
-alongside the binary and relocate it with `@loader_path`.
+The shim is found at run time, with or without `CONDA_PREFIX`
+(`src/zstd/_dlopen.mojo`): `$CONDA_PREFIX/lib/libzstdmojo.so` first, then
+next to the executable and in its `../lib`, then on the binary's rpath,
+which `mojo build` points at the environment it built in. So a binary built
+with `pixi run mojo build` also runs from a plain shell. When none has it,
+the first zstd call raises an Error naming the places it looked and saying
+to set `CONDA_PREFIX`. For distribution, put `libzstdmojo.so` next to the
+binary or in `../lib`.
 
 ### Streaming
 

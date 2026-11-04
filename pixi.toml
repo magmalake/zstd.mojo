@@ -22,7 +22,9 @@ lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "4a635f9
 # levels, plus streaming == one-shot and a known-frame cross-check against
 # Python `zstandard`. The shim is dlopened at runtime from $CONDA_PREFIX/lib,
 # installed by the zstd-shim package.
-test = { cmd = "mkdir -p build && mojo build test/zstd_test.mojo -I src -o build/zstd-test && ./build/zstd-test" }
+# The second half runs the test binaries again with CONDA_PREFIX unset: the
+# shim must then be found through the binary's rpath, as from a plain shell.
+test = { cmd = "mkdir -p build && mojo build test/zstd_test.mojo -I src -o build/zstd-test && mojo build test/dlopen_test.mojo -I src -o build/dlopen-test && ./build/zstd-test && ./build/dlopen-test && env -u CONDA_PREFIX ./build/zstd-test && env -u CONDA_PREFIX ./build/dlopen-test" }
 # mojolint (lint-mojo, below): the origin and threading mistakes the compiler
 # lets through, with mojo-lsp-server behind the rules. Exit 1 on findings.
 lint = { cmd = "mojolint --lsp -I src src test" }
