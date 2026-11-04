@@ -3,7 +3,7 @@ shim (libzstdmojo.so).
 
 Mirrors zlib.mojo's FFI pattern: a single-call C wrapper (shim/zstd_wrapper.c,
 built to $CONDA_PREFIX/lib/libzstdmojo.so by the zstd-shim pixi package) is
-loaded through an `OwnedDLHandle`. The handle is opened **once per process**
+found by `_dlopen.open_library` (with or without `CONDA_PREFIX`) and loaded through an `OwnedDLHandle`. The handle is opened **once per process**
 and never closed (`_LIB` below) — a `dlopen`/`dlclose` cycle costs hundreds of
 microseconds, so opening one per call made the binding's fixed cost dwarf the
 compression it wrapped. Every FFI-calling worker takes the handle as a
@@ -19,7 +19,7 @@ zstd is Apache Iceberg's default Parquet codec, a Puffin blob codec, and an
 Avro codec — this binding targets that headline use as a magmalake leaf tin.
 """
 
-from std.os import abort, getenv
+from ._dlopen import open_library
 from std.ffi import _Global, OwnedDLHandle, c_int, c_long_long, c_size_t
 
 
@@ -28,24 +28,25 @@ comptime _FLUSH = 1
 comptime _END = 2
 
 
-def _find_lib() -> String:
-    """Path to libzstdmojo.so: `$CONDA_PREFIX/lib` (installed by the
-    zstd-shim pixi package), else `build/` for a bare checkout."""
-    var prefix = getenv("CONDA_PREFIX", "")
-    if prefix == "":
-        return String("build/libzstdmojo.so")
-    var out = String("")
-    out += prefix
-    out += "/lib/libzstdmojo.so"
-    return out^
+struct _Shim(Movable):
+    """The process-wide shim handle, or why it couldn't be opened."""
+
+    var handle: Optional[OwnedDLHandle]
+    var error: String
+
+    def __init__(out self):
+        try:
+            self.handle = open_library("zstd.mojo", "libzstdmojo.so")
+            self.error = String("")
+        except e:
+            self.handle = None
+            self.error = String(e)
 
 
-def _open_lib() -> OwnedDLHandle:
-    """`dlopen` the shim, once, for the life of the process."""
-    try:
-        return OwnedDLHandle(_find_lib())
-    except e:
-        abort(String("zstd.mojo: ", e))
+def _open_lib() -> _Shim:
+    """`dlopen` the shim, once, for the life of the process. A failure is
+    kept and raised by `_lib()` on every use, never an abort."""
+    return _Shim()
 
 
 comptime _LIB = _Global["zstd_mojo_shim", _open_lib]
@@ -65,8 +66,15 @@ handle is safe to reach from worker threads.
 
 
 def _lib() raises -> ref[MutUntrackedOrigin] OwnedDLHandle:
-    """The cached handle, borrowed. Never destroy the referent."""
-    return _LIB.get_or_create_ptr()[]
+    """The cached handle, borrowed. Never destroy the referent.
+
+    Raises:
+        Error: If the shim can't be found (see `_dlopen.open_library`).
+    """
+    ref shim = _LIB.get_or_create_ptr()[]
+    if not shim.handle:
+        raise Error(shim.error)
+    return shim.handle.unsafe_value()
 
 
 def _error_name(imm lib: OwnedDLHandle, code: UInt) raises -> String:
