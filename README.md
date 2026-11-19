@@ -99,7 +99,6 @@ Errors raise with libzstd's own error name, straight from
 
 ```sh
 pixi run test       # builds the shim, then round-trips + a known-frame decode
-pixi run -e stable test    # same, pinned to Mojo 1.2.0 instead of nightly
 ```
 
 Covers: round trips at several sizes (0 B, 1 B, 1 KiB, 1 MiB compressible,
@@ -185,8 +184,8 @@ call.
   (`is_zstd_frame`, `frame_content_size`). No dictionary support, no
   multi-threaded compression — out of scope for a leaf tin; open an issue if
   you need either.
-- Compiles on Mojo stable (`==1.2.0`, the `stable` pixi environment) and on
-  the Modular nightly channel (`default` environment) — see CI.
+- Builds on one pinned Mojo nightly, `mojo-compiler ==1.3.0.dev2026111805`;
+  a workspace that consumes the package needs that same pin.
 
 ## License
 
