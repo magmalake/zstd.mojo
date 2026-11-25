@@ -12,7 +12,7 @@ platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 # version that built it, so the pin is exact here and in [package] below, and
 # it moves across all magmalake tins together.
 [dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 # The `zstd` command-line tool, for the tests only: they check our frames
 # against it and its frames against us. The package (below) doesn't depend on
 # it; the codec is Mojo.
@@ -20,7 +20,7 @@ zstd = ">=1.5,<2"
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
-lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "81cac02a78a8cfd48a9807dda68f8d7d2f013791" }
+lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "b73d03bbfa458417cf9eed56f4e3b7a092d73969" }
 
 [tasks]
 # Round-trip gate: compress -> decompress -> original at several sizes and
@@ -51,13 +51,13 @@ path = "src/zstd"
 name = "zstd"
 
 [package.host-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 
 [package.build-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 
 [package.run-dependencies]
-mojo-compiler = "==1.3.0.dev2026111805"
+mojo-compiler = "==1.3.0.dev2026112505"
 
 # Benchmarks run through the shared harness (magmalake/bench.mojo) and get
 # their own feature, so the tin stays out of the environments that run tests.
@@ -65,7 +65,7 @@ mojo-compiler = "==1.3.0.dev2026111805"
 # path. The package is built with the same pinned nightly as this workspace;
 # a precompiled Mojo package loads only in the compiler version that built it.
 [feature.bench.dependencies]
-bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "4cb109089ae3117c511d7aff061bb30e28b8a17e" }
+bench-mojo = { git = "https://github.com/magmalake/bench.mojo", rev = "3c5bfdb78bf5fa3082482a200f3ba01ad6466069" }
 
 [feature.bench.tasks]
 bench = "mkdir -p build && mojo build -I src -I $CONDA_PREFIX/lib/mojo bench/bench_zstd.mojo -o build/bench-zstd && ./build/bench-zstd"
