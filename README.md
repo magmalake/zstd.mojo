@@ -6,15 +6,17 @@
 
 > Part of [**magmalake**](https://magmalake.org) — data lake building blocks in Mojo.
 
-A Mojo binding to **libzstd** — one-shot and streaming compress/decompress —
-via FFI, built the same way [zlib.mojo](https://github.com/magmalake/zlib.mojo)
-wraps zlib: a small C shim (`shim/zstd_wrapper.c`) compiled to
-**`libzstdmojo.so`** and loaded through an `OwnedDLHandle`. No link flags for
-consumers; the shim is `dlopen`ed at runtime.
+**Zstandard** (RFC 8878) in pure Mojo — one-shot and streaming
+compress/decompress, and frame introspection. No C library, no shim, no
+foreign calls: a binary that uses it needs nothing at run time.
 
 zstd is Apache Iceberg's default Parquet codec, a Puffin blob codec, and an
-Avro codec — that's the headline use this binding targets. It wraps the real
-libzstd (conda-forge's `zstd` package); a pure-Mojo zstd is out of scope.
+Avro codec — that's the headline use this tin targets.
+
+The codec is vendored from [amarbaro/mojo-libs](https://github.com/amarbaro/mojo-libs)
+(`libs/zstd`, Apache-2.0), a Mojo port of libzstd's algorithms: the
+`src/zstd/_*.mojo` modules, each naming its origin and what was changed. The
+public API in `src/zstd/__init__.mojo` is this tin's own.
 
 ## Install
 
@@ -29,8 +31,7 @@ That resolves the tin from [mojoshelf](https://mojoshelf.org) and adds it — al
 ## Prerequisites
 
 - [pixi](https://pixi.sh)
-- Nothing else — `zstd` (the C library) and the shim are pulled in and built
-  automatically as pixi dependencies.
+- Nothing else.
 
 ## Use
 
@@ -42,7 +43,7 @@ var raw2 = decompress(z)         # -> List[UInt8], byte-for-byte back
 
 var n = decompress_into(z, dst)  # write straight into a caller-owned buffer
                                   # (e.g. a Parquet page's declared size) —
-                                  # no growth, no extra allocation
+                                  # no growth, no extra allocation, no copy
 
 is_zstd_frame(z)                 # Bool — magic-number sniff, no allocation
 frame_content_size(z)            # Optional[Int] — decompressed size from
@@ -55,19 +56,14 @@ Build a consumer with this package on the import path:
 mojo build your.mojo -I ../zstd.mojo/src -o your-bin
 ```
 
-The shim is found at run time, with or without `CONDA_PREFIX`
-(`src/zstd/_dlopen.mojo`): `$CONDA_PREFIX/lib/libzstdmojo.so` first, then
-next to the executable and in its `../lib`, then on the binary's rpath,
-which `mojo build` points at the environment it built in. So a binary built
-with `pixi run mojo build` also runs from a plain shell. When none has it,
-the first zstd call raises an Error naming the places it looked and saying
-to set `CONDA_PREFIX`. For distribution, put `libzstdmojo.so` next to the
-binary or in `../lib`.
+`compress` writes one frame with the content size and an XXH64 checksum.
+Levels are libzstd's (1..22, 0 for the default 3, negative for faster);
+out-of-range levels are clamped. `decompress` and `decompress_into` decode
+every frame of their input, concatenated, and skip skippable frames.
 
 ### Streaming
 
-For data that doesn't fit in memory at once, `Compressor`/`Decompressor` wrap
-`ZSTD_CCtx`/`ZSTD_DCtx` (the modern API's `ZSTD_CStream`/`ZSTD_DStream`):
+For data that doesn't fit in memory at once:
 
 ```mojo
 from zstd import Compressor, Decompressor
@@ -75,36 +71,49 @@ from zstd import Compressor, Decompressor
 var c = Compressor(level=9)
 var out = List[UInt8]()
 for chunk in chunks:
-    out.extend(c.update(chunk))
-out.extend(c.finish())            # flush the trailing block + frame epilogue
+    out.extend(c.update(chunk))   # each 128 KiB block as soon as it's full
+out.extend(c.finish())            # the last block + the checksum
 
 var d = Decompressor()
 var back = List[UInt8]()
-for chunk in compressed_chunks:
+for chunk in compressed_chunks:   # cut anywhere
     back.extend(d.update(chunk))
-back.extend(d.finish())           # no-op — kept for symmetry with Compressor
+back.extend(d.finish())           # no bytes; raises if the input stopped mid-frame
 ```
 
-`decompress()` itself falls back to this same streaming path internally when
-a frame's content size is unknown (e.g. streamed with an unset pledged size),
-growing its output buffer as it goes.
+`Compressor` keeps the level's window of input (2.25 MiB at level 3) and
+`Decompressor` the frame's window plus at most about one block of input held
+over between calls, so memory stays flat whatever the total size. A
+`Compressor` frame records a checksum but no content size; after `finish()`,
+the next call starts a new frame.
 
 ### Errors
 
-Errors raise with libzstd's own error name, straight from
-`ZSTD_getErrorName` — e.g. `zstd.decompress: Corruption_detected` or
-`zstd.decompress_into: Dst_Too_Small`.
+Every error is an `Error` whose text starts with `zstd: `, e.g.
+`zstd: corrupt input`, `zstd: truncated input`, `zstd: checksum mismatch`,
+`zstd: unknown frame prefix` (trailing bytes that aren't a frame) or
+`zstd: destination buffer too small` (`decompress_into`).
 
 ## Test
 
 ```sh
-pixi run test       # builds the shim, then round-trips + a known-frame decode
+pixi run test
 ```
 
-Covers: round trips at several sizes (0 B, 1 B, 1 KiB, 1 MiB compressible,
-1 MiB random) and levels; decoding a frame produced independently by Python
-`zstandard`, baked in as byte constants; streaming matching one-shot output;
-and a corrupt frame raising.
+`test/zstd_test.mojo`: round trips at several sizes (0 B, 1 B, 1 KiB, 1 MiB
+compressible, 1 MiB random) and levels, a frame produced by Python
+`zstandard` baked in as bytes, streaming matching one-shot, concatenated
+frames, and errors raised.
+
+`test/cli_test.sh` checks against the `zstd` command-line tool (conda-forge's,
+a test-only dependency of the workspace, not of the package), both ways: our
+frames at levels -5 to 22 decode with the tool, and the tool's frames
+(`--fast` to `--ultra -22`, without checksum or content size,
+multi-threaded, concatenated, a `--long=27` frame with a 128 MiB window)
+decode with ours, through every API. It also decodes the golden frames in
+`test/vectors` (from the zstd repository; see NOTICE) as the tool does, and
+checks that truncated frames raise and bit-flipped ones raise or decode but
+never crash. The whole task takes about 20 s.
 
 ## Perf
 
@@ -114,79 +123,59 @@ pixi run -e bench bench -- --json       # every repetition, for tracking
 pixi run -e bench bench -- --only bench_compress_random_9
 ```
 
-One M-series macOS core, 64 MiB per shape, through
+One M4 macOS core, 64 MiB per shape, through
 [bench.mojo](https://github.com/magmalake/bench.mojo) — mean of three timed
-repetitions, spread under 1% on every row:
+repetitions:
 
-| data         | level | compress    | decompress  | ratio  |
-|--------------|-------|------------:|------------:|-------:|
-| compressible |     1 | 20.5 GB/s   | 11.2 GB/s   | 10824x |
-| compressible |     3 | 13.0 GB/s   | 11.3 GB/s   | 10824x |
-| compressible |     9 | 2.12 GB/s   | 12.0 GB/s   |   747x |
-| compressible |    19 | 2.18 GB/s   | 22.3 GB/s   | 11792x |
-| random       |     1 | 9.54 GB/s   | 33.3 GB/s   |  ~1.0x |
-| random       |     3 | 10.3 GB/s   | 33.3 GB/s   |  ~1.0x |
-| random       |     9 | 5.79 GB/s   | 33.5 GB/s   |  ~1.0x |
+| data         | level | compress  | decompress | libzstd compress | libzstd decompress | ratio  |
+|--------------|-------|----------:|-----------:|-----------------:|-------------------:|-------:|
+| compressible |     1 | 6.19 GB/s | 2.51 GB/s  | 20.1 GB/s        | 10.8 GB/s          | 10817x |
+| compressible |     3 | 3.49 GB/s | 2.75 GB/s  | 12.5 GB/s        | 11.1 GB/s          | 10817x |
+| compressible |     9 | 579 MB/s  | 2.53 GB/s  | 2.02 GB/s        | 10.7 GB/s          |   747x |
+| compressible |    19 | 332 MB/s  | 3.06 GB/s  | 2.15 GB/s        | 19.7 GB/s          | 11784x |
+| random       |     1 | 1.57 GB/s | 10.4 GB/s  | 9.22 GB/s        | 33.2 GB/s          |  ~1.0x |
+| random       |     3 | 1.43 GB/s | 7.62 GB/s  | 9.38 GB/s        | 32.0 GB/s          |  ~1.0x |
+| random       |     9 | 424 MB/s  | 14.3 GB/s  | 5.66 GB/s        | 32.8 GB/s          |  ~1.0x |
+
+The libzstd columns are the same bench on zstd-mojo 0.2.0 (the libzstd
+binding this tin used to be), run the same day. Both runs were taken on a
+machine that wasn't idle (the harness flagged them as not steady), so read
+the columns against each other, not as absolute figures.
 
 Every push to `main` re-runs these on a GitHub runner and appends to a history
 published at
 [magmalake.github.io/zstd.mojo/benchmarks](https://magmalake.github.io/zstd.mojo/benchmarks/).
-Those numbers are slower and noisier than the table above, which was taken on
-an M4 — each history is keyed by machine, so the two stay separate series and
-are never averaged together.
+Those numbers are slower and noisier than the table above — each history is
+keyed by machine, so the two stay separate series and are never averaged
+together.
 
 Rates are against the **uncompressed** size in both directions, so every
-level shares a scale. Level 19 costs barely more than level 9 *on this
-input*, because it compresses about 11,800x and the expensive search finds a
-match almost immediately — that is a property of the synthetic buffer, not a
-general claim about level 19.
+level shares a scale. Both shapes are extremes: the compressible one is a
+45-byte sentence repeated (it compresses thousands of times over), the random
+one doesn't compress at all, which libzstd detects and skips faster than this
+codec does. Neither predicts real data.
 
-**What these numbers measure.** This tin is a binding, not an
-implementation: the compression is libzstd's, reached through the C shim
-below. So the table measures libzstd plus the cost of crossing the FFI
-boundary, which at 64 MiB per call is noise. It is not a measurement of Mojo
-code — the Mojo here is 394 lines of binding, and the only part of it these
-numbers can indict is per-call overhead, which is the subject of the next
-paragraph.
-
-Figures published before 2026-09-01 were single cold passes and ran lower on
-the fast rows (compressible level 1 read ~10.2 GB/s against 20.5 here); at
-3 ms per pass, building and first-touching the buffer dominated them.
-
-The shim is `dlopen`ed **once per process** and never closed, so the one-shot
-`compress()`/`decompress()` calls are safe in a hot loop. They did not used to
-be: through 0.1.0 every call opened and closed the handle, which on macOS costs
-around 450 µs whether the library is already resident or not. That fixed cost
-swamped the actual work on anything page-sized — a 24 MiB ZSTD Parquet file
-(332 pages) spent ~150 ms in `dlopen` and ~25 ms decompressing. Caching the
-handle took the fixed cost of a call from ~415 µs to ~1.4 µs.
-
-## How the shim is built
-
-`shim/` is a [pixi-build-cmake](https://pixi.sh) package: `CMakeLists.txt`
-finds conda-forge's `zstd` CMake package config (`find_package(zstd CONFIG)`
-— zstd ships one, unlike zlib's bundled CMake `Find` module) and links
-`zstd_wrapper.c` into `libzstdmojo.so`, installed to `$CONDA_PREFIX/lib`. It's
-a pixi source dependency (`zstd-shim = { path = "shim" }`) of the top-level
-workspace, so `pixi install`/`pixi run` builds it automatically — no manual
-build step.
-
-The shim itself stays thin: it's mostly ABI hygiene (building
-`ZSTD_inBuffer`/`ZSTD_outBuffer` structs internally so Mojo never replicates
-their layout) rather than reimplementing anything — one-shot compress/decompress,
-error-code checks, and streaming all forward straight to the matching libzstd
-call.
+On real data (a few MiB each of text, a Mach-O binary and YAML, same
+machine) this codec takes about 1.4-2.5x libzstd's time to compress at level 3
+and 1.4-2.8x to decompress, and its frames are within
+0.5% of libzstd's size at the same level.
 
 ## Status / scope
 
 - Targets `osx-arm64`, `linux-64`, `linux-aarch64`.
 - One-shot and streaming compress/decompress, frame introspection
-  (`is_zstd_frame`, `frame_content_size`). No dictionary support, no
-  multi-threaded compression — out of scope for a leaf tin; open an issue if
-  you need either.
+  (`is_zstd_frame`, `frame_content_size`).
+- Not supported: dictionaries (a frame that names one raises),
+  multi-threaded compression, long-distance matching when compressing.
+  Frames with a window over 128 MiB (`--long=28` and up) are refused, as
+  libzstd refuses them by default.
+- Frames are valid zstd, decoded by any zstd, but not byte-identical to
+  libzstd's.
 - Builds on one pinned Mojo nightly, `mojo-compiler ==1.3.0.dev2026111805`;
   a workspace that consumes the package needs that same pin.
 
 ## License
 
-Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). The vendored codec
+is Apache-2.0 (amarbaro/mojo-libs) and ports BSD-licensed Zstandard and
+xxHash code; their notices are in NOTICE.

@@ -1,6 +1,6 @@
 name = "zstd-mojo"
 version = "0.2.0"
-description = "A Mojo binding to libzstd (one-shot and streaming compress/decompress) via FFI"
-tags = ["compression", "zstd", "ffi", "parquet", "iceberg", "avro"]
+description = "Zstandard compression in pure Mojo (one-shot and streaming compress/decompress), no C library"
+tags = ["compression", "zstd", "parquet", "iceberg", "avro"]
 # other tins this one depends on; omit if none
 tins = []
