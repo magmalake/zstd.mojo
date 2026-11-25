@@ -1,6 +1,6 @@
 # zstd.mojo
 
-[![mojoshelf](https://mojoshelf.org/badge/zstd-mojo.svg)](https://mojoshelf.org/tins/zstd-mojo) [![mojo nightly](https://mojoshelf.org/badge/zstd-mojo/nightly.svg)](https://mojoshelf.org/tins/zstd-mojo)
+[![mojoshelf](https://mojoshelf.org/badge/zstd-mojo.svg)](https://mojoshelf.org/tins/zstd-mojo) [![mojo nightly](https://mojoshelf.org/badge/zstd-mojo/nightly.svg)](https://mojoshelf.org/tins/zstd-mojo) [![Used by](https://mojourney.dev/badge/magmalake/zstd.mojo/used-by.svg)](https://mojourney.dev/repos/magmalake/zstd.mojo#used-by) [![Mojo version](https://mojourney.dev/badge/magmalake/zstd.mojo/mojo.svg)](https://mojourney.dev/repos/magmalake/zstd.mojo)
 
 [![CI](https://github.com/magmalake/zstd.mojo/actions/workflows/ci.yml/badge.svg)](https://github.com/magmalake/zstd.mojo/actions/workflows/ci.yml) [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
