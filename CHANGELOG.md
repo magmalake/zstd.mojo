@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-11-25
+
 ### Changed
 
 - zstd is now pure Mojo: the codec is vendored, with small changes, from
