@@ -216,12 +216,8 @@ def bench_decompress_random_9(mut b: Benchmark) raises:
 
 
 def _print_ratios() raises:
-    """Ratios and round-trip checks, once. The old bench asserted round-trip
-    size inside the region it was timing.
-
-    It also warmed the loader here, because one-shot compress/decompress used
-    to `dlopen` the shim on every call; that is a process-wide handle now, so
-    the warmup is only about page cache.
+    """Ratios and round-trip checks, once, outside the timed regions. The
+    small warmup round trip is only about page cache.
     """
     var warm = _compressible(4096)
     _ = decompress(compress(Span(warm), 1))

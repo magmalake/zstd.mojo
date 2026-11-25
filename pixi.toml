@@ -3,7 +3,7 @@ authors = ["Marius S <39998+winding-lines@users.noreply.github.com>"]
 channels = ["https://conda.modular.com/max-nightly", "conda-forge"]
 name = "zstd.mojo"
 version = "0.2.0"
-description = "A Mojo binding to libzstd (one-shot and streaming compress/decompress) via FFI."
+description = "Zstandard compression in pure Mojo (one-shot and streaming compress/decompress), no C library."
 preview = ["pixi-build"]
 platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 
@@ -13,23 +13,23 @@ platforms = ["osx-arm64", "linux-64", "linux-aarch64"]
 # it moves across all magmalake tins together.
 [dependencies]
 mojo-compiler = "==1.3.0.dev2026111805"
+# The `zstd` command-line tool, for the tests only: they check our frames
+# against it and its frames against us. The package (below) doesn't depend on
+# it; the codec is Mojo.
 zstd = ">=1.5,<2"
-# The FFI shim is a pixi package (shim/); pixi builds it and installs
-# lib/libzstdmojo.so into the env — no manual build step.
-zstd-shim = { path = "shim" }
 # Added by `pixi shelf add lint-mojo`: the linter comes from GitHub as a pixi
 # source dependency pinned at the revision mojoshelf published, and builds
 # the `mojolint` executable into every environment next to mojo-lsp-server.
 lint-mojo = { git = "https://github.com/magmalake/lint.mojo.git", rev = "81cac02a78a8cfd48a9807dda68f8d7d2f013791" }
 
 [tasks]
-# Round-trip gate: compress -> decompress -> original, at several sizes and
-# levels, plus streaming == one-shot and a known-frame cross-check against
-# Python `zstandard`. The shim is dlopened at runtime from $CONDA_PREFIX/lib,
-# installed by the zstd-shim package.
-# The second half runs the test binaries again with CONDA_PREFIX unset: the
-# shim must then be found through the binary's rpath, as from a plain shell.
-test = { cmd = "mkdir -p build && mojo build test/zstd_test.mojo -I src -o build/zstd-test && mojo build test/dlopen_test.mojo -I src -o build/dlopen-test && ./build/zstd-test && ./build/dlopen-test && env -u CONDA_PREFIX ./build/zstd-test && env -u CONDA_PREFIX ./build/dlopen-test" }
+# Round-trip gate: compress -> decompress -> original at several sizes and
+# levels, streaming == one-shot, a known frame from Python `zstandard`, and
+# errors raised (test/zstd_test.mojo). Then test/cli_test.sh: our frames
+# through the `zstd` tool and the tool's through us (sizes, levels,
+# concatenated frames, a 128 MiB window, corrupt and truncated input), and
+# the golden frames of test/vectors.
+test = { cmd = "mkdir -p build && mojo build test/zstd_test.mojo -I src -o build/zstd-test && ./build/zstd-test && bash test/cli_test.sh" }
 # mojolint (lint-mojo, below): the origin and threading mistakes the compiler
 # lets through, with mojo-lsp-server behind the rules. Exit 1 on findings.
 lint = { cmd = "mojolint --lsp -I src src test" }
@@ -58,7 +58,6 @@ mojo-compiler = "==1.3.0.dev2026111805"
 
 [package.run-dependencies]
 mojo-compiler = "==1.3.0.dev2026111805"
-zstd-shim = { path = "shim" }
 
 # Benchmarks run through the shared harness (magmalake/bench.mojo) and get
 # their own feature, so the tin stays out of the environments that run tests.

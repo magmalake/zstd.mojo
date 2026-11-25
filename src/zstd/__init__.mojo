@@ -1,103 +1,32 @@
-"""`zstd` — Mojo bindings to libzstd (one-shot and streaming) via a thin C
-shim (libzstdmojo.so).
+# The decoding loops below follow libs/zstd/src/zstd/codec.mojo of
+# https://github.com/amarbaro/mojo-libs at commit 9dc0066 (Apache License 2.0,
+# Copyright 2026 AMARBARO; see NOTICE), modified: this file is zstd.mojo's own
+# API over the vendored encoder and decoder.
+"""`zstd` — Zstandard (RFC 8878) compression in pure Mojo: one-shot and
+streaming compress/decompress and frame introspection, with no C library and
+no foreign calls.
 
-Mirrors zlib.mojo's FFI pattern: a single-call C wrapper (shim/zstd_wrapper.c,
-built to $CONDA_PREFIX/lib/libzstdmojo.so by the zstd-shim pixi package) is
-found by `_dlopen.open_library` (with or without `CONDA_PREFIX`) and loaded through an `OwnedDLHandle`. The handle is opened **once per process**
-and never closed (`_LIB` below) — a `dlopen`/`dlclose` cycle costs hundreds of
-microseconds, so opening one per call made the binding's fixed cost dwarf the
-compression it wrapped. Every FFI-calling worker takes the handle as a
-BORROWED `imm` parameter — Mojo destroys a value at its last syntactic use,
-and if a function both owned the handle *and* called `get_function` on it,
-that call would be the last use, `dlclose`-ing the library before the obtained
-function pointer is actually invoked a few lines later. Splitting "hold the
-handle" (`_lib()`) from "use the handle" (a `_do_*` worker that takes it by
-`imm` borrow) keeps it alive for the whole worker call, function-pointer
-invocation included.
+The codec is vendored from amarbaro/mojo-libs (the `_*.mojo` modules here, a
+port of libzstd's algorithms; see NOTICE). This file is the public API:
+`compress`, `decompress`, `decompress_into`, `is_zstd_frame`,
+`frame_content_size`, `Compressor` and `Decompressor`.
 
-zstd is Apache Iceberg's default Parquet codec, a Puffin blob codec, and an
-Avro codec — this binding targets that headline use as a magmalake leaf tin.
+Every error is an `Error` whose text starts with `zstd: `, e.g.
+`zstd: corrupt input`, `zstd: truncated input`, `zstd: checksum mismatch` or
+`zstd: destination buffer too small`.
+
+Not supported: dictionaries (a frame that names one raises), multi-threaded
+compression and long-distance matching. Frames whose window is over 128 MiB
+(`--long=28` and up) are refused, as libzstd refuses them by default.
 """
 
-from ._dlopen import open_library
-from std.ffi import _Global, OwnedDLHandle, c_int, c_long_long, c_size_t
+from std.memory import unsafe_memmove
+from ._compress import BLOCK, Zenc, compress_all
+from ._decode import Zdec
 
 
-comptime _CONTINUE = 0
-comptime _FLUSH = 1
-comptime _END = 2
-
-
-struct _Shim(Movable):
-    """The process-wide shim handle, or why it couldn't be opened."""
-
-    var handle: Optional[OwnedDLHandle]
-    var error: String
-
-    def __init__(out self):
-        try:
-            self.handle = open_library("zstd.mojo", "libzstdmojo.so")
-            self.error = String("")
-        except e:
-            self.handle = None
-            self.error = String(e)
-
-
-def _open_lib() -> _Shim:
-    """`dlopen` the shim, once, for the life of the process. A failure is
-    kept and raised by `_lib()` on every use, never an abort."""
-    return _Shim()
-
-
-comptime _LIB = _Global["zstd_mojo_shim", _open_lib]
-"""The shim handle, opened on first use and never closed.
-
-`dlopen`/`dlclose` is not free — on macOS a full open/close cycle of an
-already-resident library measures around 450 microseconds, which is three
-orders of magnitude more than decompressing a Parquet page. Opening the
-handle per call therefore made the *fixed* cost of a `decompress` dominate
-every real workload: a 24 MiB ZSTD Parquet read spends ~150 ms in `dlopen`
-and ~10 ms decompressing. One process-wide handle removes all of it, and
-`dlsym` on the cached handle costs ~400 ns.
-
-`_Global` initialises exactly once even under concurrent first use, so the
-handle is safe to reach from worker threads.
-"""
-
-
-def _lib() raises -> ref[MutUntrackedOrigin] OwnedDLHandle:
-    """The cached handle, borrowed. Never destroy the referent.
-
-    Raises:
-        Error: If the shim can't be found (see `_dlopen.open_library`).
-    """
-    ref shim = _LIB.get_or_create_ptr()[]
-    if not shim.handle:
-        raise Error(shim.error)
-    return shim.handle.unsafe_value()
-
-
-def _error_name(imm lib: OwnedDLHandle, code: UInt) raises -> String:
-    """Reconstructs the `const char*` from `zstdm_error_name` as a `String`.
-
-    The string is one of libzstd's static error-name literals, so its
-    lifetime outlives this call regardless of `lib`."""
-    var name_fn = lib.get_function[Int]("zstdm_error_name")
-    var addr = name_fn(code)
-    if addr == 0:
-        return String("<unknown zstd error>")
-    var p = Pointer[UInt8, ImmUntrackedOrigin](
-        unsafe_from_address=addr
-    )
-    return String(unsafe_from_utf8_ptr=p)
-
-
-def _check(imm lib: OwnedDLHandle, code: UInt, what: String) raises:
-    """Raises with libzstd's own error name (`ZSTD_getErrorName`) if `code`
-    (a raw libzstd `size_t` return value) encodes an error."""
-    var is_err_fn = lib.get_function[c_int]("zstdm_is_error")
-    if Int(is_err_fn(code)) != 0:
-        raise Error(what + ": " + _error_name(lib, code))
+def _truncated() -> Error:
+    return Error("zstd: truncated input")
 
 
 # ---------------------------------------------------------------------------
@@ -105,109 +34,88 @@ def _check(imm lib: OwnedDLHandle, code: UInt, what: String) raises:
 # ---------------------------------------------------------------------------
 
 
-def _do_compress(
-    imm lib: OwnedDLHandle, data: Span[UInt8, _], level: c_int
-) raises -> List[UInt8]:
-    var bound_fn = lib.get_function[c_size_t]("zstdm_compress_bound")
-    var cap = Int(bound_fn(c_size_t(len(data))))
-    var out = List[UInt8](capacity=cap)
-    out.resize(cap, 0)
-
-    var compress_fn = lib.get_function[c_size_t]("zstdm_compress")
-    var rc = compress_fn(
-        Int(data.unsafe_ptr()),
-        c_size_t(len(data)),
-        Int(out.unsafe_ptr()),
-        c_size_t(cap),
-        level,
-    )
-    _check(lib, rc, "zstd.compress")
-    out.resize(Int(rc), 0)
+def _compress_stream(data: Span[UInt8, _], level: Int) -> List[UInt8]:
+    """The whole of `data` through the streaming encoder: one frame with no
+    content size, for inputs the one-shot encoder doesn't take (2 GiB and
+    over)."""
+    var z = Zenc(level)
+    var i = 0
+    while i < len(data):
+        var n = min(len(data) - i, 1 << 24)
+        z.write(data[i : i + n])
+        i += n
+    z.finish()
+    var out = List[UInt8]()
+    swap(out, z.out)
     return out^
 
 
 def compress(data: Span[UInt8, _], level: Int = 3) raises -> List[UInt8]:
-    """Compresses `data` into a single zstd frame at `level` (1..22).
+    """Compresses `data` into a single zstd frame at `level`.
 
-    Zero-length `data` is a real (if degenerate) case for zstd — it still
-    produces a valid, tiny frame that decompresses back to zero bytes."""
-    ref lib = _lib()
-    return _do_compress(lib, data, c_int(level))
-
-
-def _do_frame_content_size(
-    imm lib: OwnedDLHandle, data: Span[UInt8, _]
-) raises -> Int:
-    var size_fn = lib.get_function[c_long_long]("zstdm_frame_content_size")
-    return Int(size_fn(Int(data.unsafe_ptr()), c_size_t(len(data))))
-
-
-def _do_decompress_known(
-    imm lib: OwnedDLHandle, data: Span[UInt8, _], size: Int
-) raises -> List[UInt8]:
-    var out = List[UInt8](capacity=size)
-    out.resize(size, 0)
-    if size > 0:
-        var decompress_fn = lib.get_function[c_size_t]("zstdm_decompress")
-        var rc = decompress_fn(
-            Int(data.unsafe_ptr()),
-            c_size_t(len(data)),
-            Int(out.unsafe_ptr()),
-            c_size_t(size),
-        )
-        _check(lib, rc, "zstd.decompress")
-        if Int(rc) != size:
-            out.resize(Int(rc), 0)
-    return out^
+    Levels are libzstd's: 1..22, 0 meaning the default (3), negative levels
+    faster still; out-of-range levels are clamped. The frame records the
+    content size and an XXH64 checksum. Zero-length `data` still produces a
+    valid, tiny frame that decompresses back to zero bytes. Inputs of 2 GiB
+    and more go through the streaming encoder, into a frame without a
+    content size.
+    """
+    if len(data) >= 1 << 31:
+        return _compress_stream(data, level)
+    return compress_all(data, level)
 
 
 def decompress(data: Span[UInt8, _]) raises -> List[UInt8]:
-    """Decompresses a single zstd frame.
+    """Decompresses every frame of `data`, concatenated (skippable frames are
+    skipped). Empty `data` gives an empty result.
 
-    Uses `ZSTD_getFrameContentSize` to size the output in one shot when the
-    frame carries it (true for anything `compress()` produced). Falls back
-    to the streaming API — growing the output buffer as it goes — when the
-    size is unknown (e.g. a frame streamed with an unset pledged size). A
-    genuinely corrupt frame raises either way, with libzstd's error name.
+    When the first frame records its content size (true for anything
+    `compress()` produced) the output is allocated at that size up front;
+    otherwise it grows as the frames decode.
+
+    Raises:
+        Error: On corrupt or truncated data, a checksum mismatch, or trailing
+            bytes that aren't a zstd frame.
     """
     if len(data) == 0:
         return List[UInt8]()
-    ref lib = _lib()
-    var size = _do_frame_content_size(lib, data)
-    if size >= 0:
-        return _do_decompress_known(lib, data, size)
-    var dec = Decompressor()
-    var out = dec.update(data)
-    out.extend(dec.finish())
-    return out^
-
-
-def _do_decompress_into(
-    imm lib: OwnedDLHandle, data: Span[UInt8, _], dst: Span[mut=True, UInt8, _]
-) raises -> Int:
-    var decompress_fn = lib.get_function[c_size_t]("zstdm_decompress")
-    var rc = decompress_fn(
-        Int(data.unsafe_ptr()),
-        c_size_t(len(data)),
-        Int(dst.unsafe_ptr()),
-        c_size_t(len(dst)),
-    )
-    _check(lib, rc, "zstd.decompress_into")
-    return Int(rc)
+    var d = Zdec(False)
+    var size = _header_content_size(data)
+    if size > 0:
+        # Room for the frame plus the decoder's block slack, so that one frame
+        # never regrows the buffer. The header is untrusted: no more than the
+        # data could hold (a 4-byte RLE block decodes to at most 128 KiB).
+        var hint = min(size, len(data) << 15)
+        d.out.resize(unsafe_uninit_length=hint + BLOCK + 64)
+    var ip = d.parse(data.unsafe_ptr().unsafe_mut_cast[False](), len(data))
+    if ip < len(data) or not d.idle():
+        raise _truncated()
+    d.out.resize(unsafe_uninit_length=d.op)
+    var res = List[UInt8]()
+    swap(res, d.out)
+    return res^
 
 
 def decompress_into(
     data: Span[UInt8, _], dst: Span[mut=True, UInt8, _]
 ) raises -> Int:
-    """Decompresses `data` straight into caller-owned `dst` — no growth, no
-    extra allocation. For callers that already know the decompressed size
-    (e.g. a Parquet page's declared uncompressed length). Returns the number
-    of bytes written; raises (`zstd.decompress_into: Dst_Too_Small`, ...) if
-    `dst` is too small or `data` is not a valid frame."""
+    """Decompresses every frame of `data` straight into caller-owned `dst` —
+    no growth, no extra allocation, no copy. For callers that already know the
+    decompressed size (e.g. a Parquet page's declared uncompressed length).
+    Returns the number of bytes written; empty `data` writes nothing.
+
+    Raises:
+        Error: `zstd: destination buffer too small` if the frames hold more
+            than `dst` does (bytes up to that point may have been written),
+            and as `decompress` does on invalid data.
+    """
     if len(data) == 0:
         return 0
-    ref lib = _lib()
-    return _do_decompress_into(lib, data, dst)
+    var d = Zdec(dst=dst)
+    var ip = d.parse(data.unsafe_ptr().unsafe_mut_cast[False](), len(data))
+    if ip < len(data) or not d.idle():
+        raise _truncated()
+    return d.op
 
 
 # ---------------------------------------------------------------------------
@@ -229,14 +137,40 @@ def is_zstd_frame(data: Span[UInt8, _]) -> Bool:
     return magic == 0xFD2FB528
 
 
+def _header_content_size(data: Span[UInt8, _]) -> Int:
+    """The content size in the frame header at the start of `data`: -1 when
+    the header doesn't record one, -2 when `data` doesn't start with a whole
+    zstd frame header."""
+    if not is_zstd_frame(data) or len(data) < 5:
+        return -2
+    var fd = Int(data[4])
+    if fd & 8 != 0:  # reserved bit
+        return -2
+    var single = (fd >> 5) & 1
+    var fcs = fd >> 6
+    var dsz = 0 if fd & 3 == 0 else (1 if fd & 3 == 1 else (2 if fd & 3 == 2 else 4))
+    var csz = single if fcs == 0 else (2 if fcs == 1 else (4 if fcs == 2 else 8))
+    var q = 5 + (1 - single) + dsz
+    if len(data) < q + csz:
+        return -2
+    if csz == 0:
+        return -1
+    var v = 0
+    for k in range(csz):
+        v |= Int(data[q + k]) << (8 * k)
+    if csz == 2:
+        v += 256
+    if v < 0:  # 2^63 and up: more than any buffer
+        return -2
+    return v
+
+
 def frame_content_size(data: Span[UInt8, _]) raises -> Optional[Int]:
     """The decompressed size recorded in a zstd frame header, or `None` if
-    `data` isn't a zstd frame or the frame doesn't carry a content size
-    (e.g. streamed with an unset pledged size)."""
-    if not is_zstd_frame(data):
-        return None
-    ref lib = _lib()
-    var size = _do_frame_content_size(lib, data)
+    `data` doesn't start with a zstd frame header or the frame doesn't carry a
+    content size (e.g. one written by `Compressor`). Only the first frame's
+    header is read."""
+    var size = _header_content_size(data)
     if size < 0:
         return None
     return size
@@ -248,155 +182,128 @@ def frame_content_size(data: Span[UInt8, _]) raises -> Optional[Int]:
 
 
 struct Compressor(Movable):
-    """A streaming zstd compressor over `ZSTD_CCtx` (the modern API's
-    `ZSTD_CStream`). Feed chunks to `update()`; call `finish()` once at the
-    end to flush the trailing block and frame epilogue."""
+    """A streaming zstd compressor. Feed chunks to `update()`; call `finish()`
+    once at the end to write the last block and the checksum.
 
-    var _cctx: Int
+    Input is kept in a window buffer (the level's window plus 256 KiB:
+    2.25 MiB at level 3) and compressed a 128 KiB block at a time, so
+    `update()` returns each block as soon as it's full and memory stays flat
+    whatever the total size. The frame records a checksum but no content
+    size. After `finish()`, the next `update()` or `finish()` starts a new
+    frame.
+    """
+
+    var _z: Zenc
+    var _level: Int
+    var _done: Bool
 
     def __init__(out self, level: Int = 3) raises:
-        var create_fn = _lib().get_function[Int]("zstdm_create_cctx")
-        self._cctx = create_fn()
-        if self._cctx == 0:
-            raise Error("zstd.Compressor: ZSTD_createCCtx failed")
-        var level_fn = _lib().get_function[c_size_t](
-            "zstdm_cctx_set_level"
-        )
-        var rc = level_fn(self._cctx, c_int(level))
-        _check(_lib(), rc, "zstd.Compressor(level)")
+        """A compressor at `level`, as `compress()` takes it."""
+        self._z = Zenc(level)
+        self._level = level
+        self._done = False
 
-    def __deinit__(deinit self):
-        try:
-            var free_fn = _lib().get_function[c_size_t](
-                "zstdm_free_cctx"
-            )
-            _ = free_fn(self._cctx)
-        except:
-            pass
-
-    def _drive(mut self, chunk: Span[UInt8, _], end_op: Int) raises -> List[
-        UInt8
-    ]:
-        var stream_fn = _lib().get_function[c_size_t](
-            "zstdm_compress_stream2"
-        )
-
-        var cap = len(chunk) + 64
-        if cap < 4096:
-            cap = 4096
-        var out = List[UInt8](capacity=cap)
-        out.resize(cap, 0)
-
-        var src_pos = List[UInt](capacity=1)
-        src_pos.resize(1, 0)
-        var dst_pos = List[UInt](capacity=1)
-        dst_pos.resize(1, 0)
-
-        var written = 0
-        while True:
-            var rc = stream_fn(
-                self._cctx,
-                Int(chunk.unsafe_ptr()),
-                c_size_t(len(chunk)),
-                Int(src_pos.unsafe_ptr()),
-                Int(out.unsafe_ptr()) + written,
-                c_size_t(cap - written),
-                Int(dst_pos.unsafe_ptr()),
-                c_int(end_op),
-            )
-            _check(_lib(), rc, "zstd.Compressor")
-            written += Int(dst_pos[0])
-            dst_pos[0] = 0
-
-            var src_done = Int(src_pos[0]) >= len(chunk)
-            if end_op == _CONTINUE:
-                if src_done:
-                    break
-            elif src_done and Int(rc) == 0:
-                break
-            if written >= cap:
-                cap *= 2
-                out.resize(cap, 0)
-        out.resize(written, 0)
+    def _take(mut self) -> List[UInt8]:
+        var out = List[UInt8]()
+        swap(out, self._z.out)
         return out^
 
+    def _restart(mut self):
+        if self._done:
+            self._z = Zenc(self._level)
+            self._done = False
+
     def update(mut self, chunk: Span[UInt8, _]) raises -> List[UInt8]:
-        """Compresses `chunk`, returning whatever compressed bytes libzstd
-        was ready to emit (may be less than a full block; may be empty)."""
-        return self._drive(chunk, _CONTINUE)
+        """Compresses `chunk`, returning the compressed bytes that are ready
+        (the frame header and every finished block; may be empty)."""
+        self._restart()
+        self._z.write(chunk)
+        return self._take()
 
     def finish(mut self) raises -> List[UInt8]:
-        """Flushes the trailing block and frame epilogue (checksum, content
-        size if pledged). Call exactly once, after the last `update()`."""
-        var empty = List[UInt8]()
-        return self._drive(Span(empty), _END)
+        """Compresses what is left and writes the frame epilogue (last block,
+        checksum). Call once, after the last `update()`."""
+        self._restart()
+        self._z.finish()
+        self._done = True
+        return self._take()
+
+
+def _drain(
+    mut d: Zdec, p: ImmPointer[UInt8, _], n: Int, mut out: List[UInt8]
+) raises -> Int:
+    """Decodes what is complete in p[0:n] through the sliding decoder `d`,
+    appending the output to `out`; returns the bytes consumed."""
+    var ip = 0
+    var progress = True
+    while progress:
+        var c = d.parse(p.unsafe_offset(ip), n - ip)
+        ip += c
+        var got = d.op - d.rd
+        if got > 0:
+            out.extend(Span(d.out)[d.rd : d.op])
+            d.rd = d.op
+        progress = c > 0 or got > 0
+    return ip
 
 
 struct Decompressor(Movable):
-    """A streaming zstd decompressor over `ZSTD_DCtx` (the modern API's
-    `ZSTD_DStream`). Feed chunks to `update()` as they arrive; there's no
-    separate flush step, so `finish()` is a no-op kept for API symmetry with
-    `Compressor`."""
+    """A streaming zstd decompressor. Feed compressed chunks to `update()` as
+    they arrive, cut anywhere; each call returns what they decode to. Frames
+    may follow one another. `finish()` returns nothing and raises if the input
+    stopped inside a frame.
 
-    var _dctx: Int
+    Memory is the frame's window (8 MiB at most for what libzstd writes at
+    levels up to 19 without `--long`) plus at most about one block of input
+    held over between calls.
+    """
+
+    var _d: Zdec
+    var _pend: List[UInt8]
 
     def __init__(out self) raises:
-        var create_fn = _lib().get_function[Int]("zstdm_create_dctx")
-        self._dctx = create_fn()
-        if self._dctx == 0:
-            raise Error("zstd.Decompressor: ZSTD_createDCtx failed")
-
-    def __deinit__(deinit self):
-        try:
-            var free_fn = _lib().get_function[c_size_t](
-                "zstdm_free_dctx"
-            )
-            _ = free_fn(self._dctx)
-        except:
-            pass
+        self._d = Zdec(True)
+        self._pend = List[UInt8]()
 
     def update(mut self, chunk: Span[UInt8, _]) raises -> List[UInt8]:
-        """Decompresses as much of `chunk` as libzstd will take in one pass,
-        growing the output buffer until all of `chunk` is consumed."""
-        var stream_fn = _lib().get_function[c_size_t](
-            "zstdm_decompress_stream"
-        )
+        """Decompresses as much as `chunk` (with what earlier calls held over)
+        completes, and holds over the rest.
 
-        var cap = len(chunk) * 3
-        if cap < 4096:
-            cap = 4096
-        var out = List[UInt8](capacity=cap)
-        out.resize(cap, 0)
-
-        var src_pos = List[UInt](capacity=1)
-        src_pos.resize(1, 0)
-        var dst_pos = List[UInt](capacity=1)
-        dst_pos.resize(1, 0)
-
-        var written = 0
-        while True:
-            var rc = stream_fn(
-                self._dctx,
-                Int(chunk.unsafe_ptr()),
-                c_size_t(len(chunk)),
-                Int(src_pos.unsafe_ptr()),
-                Int(out.unsafe_ptr()) + written,
-                c_size_t(cap - written),
-                Int(dst_pos.unsafe_ptr()),
+        Raises:
+            Error: On corrupt data, a checksum mismatch, or bytes between
+                frames that aren't a zstd frame.
+        """
+        var out = List[UInt8]()
+        if len(self._pend) == 0:
+            var p = chunk.unsafe_ptr().unsafe_mut_cast[False]()
+            var used = _drain(self._d, p, len(chunk), out)
+            self._pend.extend(chunk[used:])
+            return out^
+        self._pend.extend(chunk)
+        var p = self._pend.unsafe_ptr().unsafe_mut_cast[False]()
+        var used = _drain(self._d, p, len(self._pend), out)
+        var left = len(self._pend) - used
+        if used > 0 and left > 0:
+            var b = self._pend.unsafe_ptr()
+            unsafe_memmove(
+                dest=b,
+                src=b.unsafe_offset(used).unsafe_origin_cast[
+                    MutUntrackedOrigin
+                ](),
+                count=left,
             )
-            _check(_lib(), rc, "zstd.Decompressor")
-            written += Int(dst_pos[0])
-            dst_pos[0] = 0
-
-            if Int(src_pos[0]) >= len(chunk):
-                break
-            if written >= cap:
-                cap *= 2
-                out.resize(cap, 0)
-        out.resize(written, 0)
+        self._pend.resize(unsafe_uninit_length=left)
         return out^
 
     def finish(mut self) raises -> List[UInt8]:
-        """No-op — decompression has no trailing flush step. Kept so
-        `Compressor`/`Decompressor` share the same update/finish shape."""
+        """Checks that the input ended between frames. Returns no bytes:
+        `update()` already returned everything. Kept so `Compressor` and
+        `Decompressor` share the same update/finish shape.
+
+        Raises:
+            Error: `zstd: truncated input` if the input so far stops inside a
+                frame.
+        """
+        if len(self._pend) > 0 or self._d.inframe or self._d.skip > 0:
+            raise _truncated()
         return List[UInt8]()

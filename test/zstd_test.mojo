@@ -6,7 +6,12 @@
     it was made from
   - streaming (Compressor/Decompressor) matches one-shot (compress/decompress)
   - is_zstd_frame / frame_content_size agree with what compress() produced
-  - corrupt input raises
+  - corrupt and truncated input raises, a short decompress_into buffer
+    raises, and Decompressor.finish() raises on a stream cut inside a frame
+  - concatenated frames, out-of-range levels, Compressor output before
+    finish() and a Compressor reused after finish()
+
+test/cli_test.sh checks the same API against the `zstd` command-line tool.
 """
 
 from std.random import seed, random_ui64
@@ -148,8 +153,7 @@ def _test_known_frame() raises:
 
 def _test_corrupt_input() raises:
     # A short buffer that starts with the zstd magic (so is_zstd_frame is
-    # true and decompress() takes the real libzstd path) but is truncated /
-    # garbage after that — not a valid frame.
+    # true) but is garbage after that — not a valid frame.
     var junk: List[UInt8] = [40, 181, 47, 253, 1, 2, 3, 4, 5, 6, 7, 8]
     var raised = False
     var message = String("")
@@ -178,8 +182,118 @@ def _test_edge_sizes() raises:
     _round_trip(_make_random(1024 * 1024, 1234), 3, "1 MiB random")
 
 
+def _expect_raise(msg: String, what: String) raises:
+    """Raises unless `msg` (an error caught by the caller, or "" for none) is
+    a zstd error."""
+    if not msg.startswith("zstd: "):
+        raise Error(what + ": did not raise a zstd error (" + msg + ")")
+
+
+def _test_errors() raises:
+    var data = _make_compressible(100_000)
+    var comp = compress(data, 3)
+
+    # Every proper prefix is truncated: decompress and decompress_into raise.
+    for k in range(0, len(comp), 7):
+        if k == 0:
+            continue
+        var msg = String("")
+        try:
+            _ = decompress(Span(comp)[:k])
+        except e:
+            msg = String(e)
+        _expect_raise(msg, "decompress of a " + String(k) + "-byte prefix")
+
+    var dst = List[UInt8](length=len(data) - 1, fill=0)
+    var msg = String("")
+    try:
+        _ = decompress_into(comp, dst)
+    except e:
+        msg = String(e)
+    _expect_raise(msg, "decompress_into a short buffer")
+    if msg != "zstd: destination buffer too small":
+        raise Error("decompress_into a short buffer: " + msg)
+
+    # A stream cut inside its frame: update() returns what it can, finish()
+    # raises.
+    var d = Decompressor()
+    _ = d.update(Span(comp)[: len(comp) - 1])
+    msg = String("")
+    try:
+        _ = d.finish()
+    except e:
+        msg = String(e)
+    _expect_raise(msg, "Decompressor.finish() of a cut stream")
+    var empty = Decompressor()
+    if len(empty.finish()) != 0:
+        raise Error("Decompressor.finish() with no input returned bytes")
+
+    # Trailing bytes that aren't a frame.
+    var trailing = comp.copy()
+    trailing.extend(Span(comp)[:9])
+    msg = String("")
+    try:
+        _ = decompress(trailing)
+    except e:
+        msg = String(e)
+    _expect_raise(msg, "decompress with trailing bytes")
+
+    var not_frame: List[UInt8] = [1, 2, 3]
+    if frame_content_size(not_frame) or frame_content_size(Span(comp)[:5]):
+        raise Error("frame_content_size of a non-frame / cut header")
+    print("errors raised as expected")
+
+
+def _test_frames_and_streams() raises:
+    var a = _make_compressible(5000)
+    var b = _make_random(300_000, 99)
+    var ab = a.copy()
+    ab.extend(Span(b))
+
+    # Concatenated frames decode to the concatenation, through every path.
+    var two = compress(a, 1)
+    two.extend(compress(b, 9))
+    _assert_bytes_equal(decompress(two), ab, "two frames")
+    var dst = List[UInt8](length=len(ab), fill=0)
+    var n = decompress_into(two, dst)
+    _assert_bytes_equal(Span(dst)[:n], ab, "two frames (decompress_into)")
+    var d = Decompressor()
+    var back = d.update(two)
+    back.extend(d.finish())
+    _assert_bytes_equal(back, ab, "two frames (Decompressor)")
+
+    # Levels out of range are clamped, as libzstd clamps them.
+    for level in [0, -200_000, 100]:
+        _assert_bytes_equal(
+            decompress(compress(b, level)), b, "level " + String(level)
+        )
+
+    # Compressor hands out blocks before finish(), and starts a new frame
+    # after it.
+    var c = Compressor(3)
+    var big = _make_random(1024 * 1024, 7)
+    var early = c.update(big)
+    if len(early) < 512 * 1024:
+        raise Error(
+            "Compressor.update(1 MiB) returned only "
+            + String(len(early))
+            + " bytes"
+        )
+    var frame1 = early^
+    frame1.extend(c.finish())
+    if frame_content_size(frame1):
+        raise Error("a Compressor frame recorded a content size")
+    var frame2 = c.update(a)
+    frame2.extend(c.finish())
+    _assert_bytes_equal(decompress(frame1), big, "Compressor frame 1")
+    _assert_bytes_equal(decompress(frame2), a, "Compressor frame 2")
+    print("frames and streams OK")
+
+
 def main() raises:
     _test_edge_sizes()
     _test_known_frame()
     _test_corrupt_input()
+    _test_errors()
+    _test_frames_and_streams()
     print("zstd.mojo: all tests passed")
