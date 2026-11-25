@@ -171,7 +171,7 @@ and 1.4-2.8x to decompress, and its frames are within
   libzstd refuses them by default.
 - Frames are valid zstd, decoded by any zstd, but not byte-identical to
   libzstd's.
-- Builds on one pinned Mojo nightly, `mojo-compiler ==1.3.0.dev2026111805`;
+- Builds on one pinned Mojo nightly, `mojo-compiler ==1.3.0.dev2026112505`;
   a workspace that consumes the package needs that same pin.
 
 ## License
