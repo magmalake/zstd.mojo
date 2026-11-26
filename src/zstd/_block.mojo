@@ -1,7 +1,8 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/block.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
-# Modified for zstd.mojo: imports renamed; the -D ZSTD_MUTANT test hook removed; decode_block takes the end of the caller's buffer (dend) and raises too_small() past it.
+# Modified for zstd.mojo: imports renamed; the -D ZSTD_MUTANT test hook removed; decode_block takes the end of the caller's buffer (dend), raises too_small() past it and copies exactly
+# (no wide copies past the sequence) within 32 bytes of it.
 """zstd block decoder (RFC 8878): literals, sequence tables, sequences. Accepts and rejects what libzstd 1.5.7
 does (BSD-3-Clause algorithms, Meta Platforms and Yann Collet; see NOTICE)."""
 from std.memory import unsafe_memcpy, unsafe_memset
@@ -267,6 +268,7 @@ def decode_block(
     var r2 = dc.rep2
     var oend = op0 + (omax_raw if direct else omax)
     var litp = 0
+    var wild = direct or (Int(src[unsafe_offset=0]) & 3 != 0)  # literals have 32 spare bytes after them
     for k in range(nseq):
         var lc = llt[unsafe_offset=lls]
         var mc = mlt[unsafe_offset=mls]
@@ -320,21 +322,56 @@ def decode_block(
             raise bad("corrupt input")
         if op + ll + ml > dend:
             raise too_small()
-        unsafe_memcpy(dest=dst.unsafe_offset(op), src=lp.unsafe_offset(litp), count=ll)
+        # the wide copies below write up to 31 bytes past the sequence's end: a buffer of our own always has that
+        # slack, a caller's (decompress_into) may not, so the last sequences before its end are copied exactly
+        var exact = dend - op - ll - ml < 32
+        if wild and ll <= 64 and not exact:
+            # 16-byte steps, the first one unconditional (most runs are shorter, and a fixed first copy saves a
+            # mispredicted loop exit): up to 15 bytes past the run are read (literals have 32 spare bytes) and
+            # written (dst has 32 spare bytes past the output end), and later output overwrites them
+            dst.unsafe_offset(op).unsafe_store[alignment=1](lp.unsafe_offset(litp).unsafe_load[width=32, alignment=1]())
+            if ll > 32:
+                dst.unsafe_offset(op + 32).unsafe_store[alignment=1](lp.unsafe_offset(litp + 32).unsafe_load[width=32, alignment=1]())
+        else:
+            unsafe_memcpy(dest=dst.unsafe_offset(op), src=lp.unsafe_offset(litp), count=ll)
         litp += ll
         op += ll
         if offset > op - lo or offset <= 0:
             raise bad("corrupt input")
         var m = op - offset
         var cpy = op + ml
-        if offset >= ml:
-            unsafe_memcpy(dest=dst.unsafe_offset(op), src=dst.unsafe_offset(m).unsafe_origin_cast[MutUntrackedOrigin](), count=ml)
+        if exact:
+            if offset >= ml:
+                unsafe_memcpy(dest=dst.unsafe_offset(op), src=dst.unsafe_offset(m).unsafe_origin_cast[MutUntrackedOrigin](), count=ml)
+                op = cpy
+            else:
+                while op < cpy:
+                    dst[unsafe_offset=op] = dst[unsafe_offset=m]
+                    op += 1
+                    m += 1
+        elif offset >= 16:  # each 16-byte piece reads only bytes already written; first piece unconditional
+            dst.unsafe_offset(op).unsafe_store[alignment=1](dst.unsafe_offset(m).unsafe_load[width=16, alignment=1]())
+            if ml > 16:
+                for i in range(16, ml, 16):
+                    dst.unsafe_offset(op + i).unsafe_store[alignment=1](dst.unsafe_offset(m + i).unsafe_load[width=16, alignment=1]())
+            op = cpy
+        elif offset >= ml:
+            dst.unsafe_offset(op).unsafe_store[alignment=1](dst.unsafe_offset(m).unsafe_load[width=16, alignment=1]())  # ml <= offset < 16
             op = cpy
         else:
-            while op < cpy:
+            # the match repeats with period offset, so any multiple of it is a valid distance: widen it to 16 or
+            # more and copy 16 bytes at a time (dst has 32 spare bytes past the output end)
+            var d = offset
+            while d < 16:
+                d += offset
+            for _ in range(min(d - offset, ml)):  # until op - d reaches the match start
                 dst[unsafe_offset=op] = dst[unsafe_offset=m]
                 op += 1
                 m += 1
+            while op < cpy:
+                dst.unsafe_offset(op).unsafe_store[alignment=1](dst.unsafe_offset(op - d).unsafe_load[width=16, alignment=1]())
+                op += 16
+            op = cpy
     if not bd.at_end():
         raise bad("corrupt input")
     if ln - litp > oend - op:

@@ -14,9 +14,10 @@ zstd is Apache Iceberg's default Parquet codec, a Puffin blob codec, and an
 Avro codec — that's the headline use this tin targets.
 
 The codec is vendored from [amarbaro/mojo-libs](https://github.com/amarbaro/mojo-libs)
-(`libs/zstd`, Apache-2.0), a Mojo port of libzstd's algorithms: the
-`src/zstd/_*.mojo` modules, each naming its origin and what was changed. The
-public API in `src/zstd/__init__.mojo` is this tin's own.
+(`libs/zstd`, mojo-zstd 0.4.0, tag `zstd-v0.4.0`, Apache-2.0), a Mojo port
+of libzstd's algorithms: the `src/zstd/_*.mojo` modules, each naming its
+origin and what was changed. The public API in `src/zstd/__init__.mojo` is
+this tin's own.
 
 ## Install
 
@@ -129,18 +130,19 @@ repetitions:
 
 | data         | level | compress  | decompress | libzstd compress | libzstd decompress | ratio  |
 |--------------|-------|----------:|-----------:|-----------------:|-------------------:|-------:|
-| compressible |     1 | 6.19 GB/s | 2.51 GB/s  | 20.1 GB/s        | 10.8 GB/s          | 10817x |
-| compressible |     3 | 3.49 GB/s | 2.75 GB/s  | 12.5 GB/s        | 11.1 GB/s          | 10817x |
-| compressible |     9 | 579 MB/s  | 2.53 GB/s  | 2.02 GB/s        | 10.7 GB/s          |   747x |
-| compressible |    19 | 332 MB/s  | 3.06 GB/s  | 2.15 GB/s        | 19.7 GB/s          | 11784x |
-| random       |     1 | 1.57 GB/s | 10.4 GB/s  | 9.22 GB/s        | 33.2 GB/s          |  ~1.0x |
-| random       |     3 | 1.43 GB/s | 7.62 GB/s  | 9.38 GB/s        | 32.0 GB/s          |  ~1.0x |
-| random       |     9 | 424 MB/s  | 14.3 GB/s  | 5.66 GB/s        | 32.8 GB/s          |  ~1.0x |
+| compressible |     1 | 9.38 GB/s | 7.97 GB/s  | 20.1 GB/s        | 10.8 GB/s          | 10817x |
+| compressible |     3 | 7.90 GB/s | 7.84 GB/s  | 12.5 GB/s        | 11.1 GB/s          | 10817x |
+| compressible |     9 | 822 MB/s  | 7.25 GB/s  | 2.02 GB/s        | 10.7 GB/s          |   747x |
+| compressible |    19 | 509 MB/s  | 11.3 GB/s  | 2.15 GB/s        | 19.7 GB/s          | 11784x |
+| random       |     1 | 7.11 GB/s | 15.4 GB/s  | 9.22 GB/s        | 33.2 GB/s          |  ~1.0x |
+| random       |     3 | 5.32 GB/s | 15.6 GB/s  | 9.38 GB/s        | 32.0 GB/s          |  ~1.0x |
+| random       |     9 | 541 MB/s  | 16.2 GB/s  | 5.66 GB/s        | 32.8 GB/s          |  ~1.0x |
 
-The libzstd columns are the same bench on zstd-mojo 0.2.0 (the libzstd
-binding this tin used to be), run the same day. Both runs were taken on a
-machine that wasn't idle (the harness flagged them as not steady), so read
-the columns against each other, not as absolute figures.
+The codec columns are mojo-zstd 0.4.0 (2026-11-26). The libzstd columns are
+the same bench on zstd-mojo 0.2.0 (the libzstd binding this tin used to be),
+run on 2026-11-25. Both runs were taken on a machine that wasn't idle (the
+harness flagged them as not steady), so read the columns against each other,
+not as absolute figures.
 
 Every push to `main` re-runs these on a GitHub runner and appends to a history
 published at
@@ -155,10 +157,11 @@ level shares a scale. Both shapes are extremes: the compressible one is a
 one doesn't compress at all, which libzstd detects and skips faster than this
 codec does. Neither predicts real data.
 
-On real data (a few MiB each of text, a Mach-O binary and YAML, same
-machine) this codec takes about 1.4-2.5x libzstd's time to compress at level 3
-and 1.4-2.8x to decompress, and its frames are within
-0.5% of libzstd's size at the same level.
+On real data (a few MiB each of text and JSON lines, same machine) this
+codec takes about 1.2x the `zstd` tool's time to compress at level 3 and
+1.4-1.6x at level 9, and decompresses as fast as the tool or a little faster
+(the tool's benchmark skips the checksum; this codec checks it). Its frames
+are within 1% of libzstd's size at level 3 and 2.5% at level 9.
 
 ## Status / scope
 

@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/decode.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed; Zdec can decode straight into a caller's buffer (Zdec(dst=...)), raising too_small() when it is full;
 # parse() waits for a last block's checksum instead of raising when it hasn't arrived yet.
@@ -82,7 +82,12 @@ struct Zdec(Movable):
         if need <= len(self.out):
             return
         if not self.sliding:
-            self.out.resize(unsafe_uninit_length=max(need, 2 * len(self.out)))
+            var want = max(need, 2 * len(self.out))
+            if self.csize >= 0:
+                # a declared size is a hint, not a promise: reserve the whole frame in one step, but never
+                # more than 64 MiB past what is needed or twice the buffer, so a lying header stays cheap
+                want = max(need, min(self.lo + self.csize + 32, max(2 * len(self.out), need + (1 << 26))))
+            self.out.resize(unsafe_uninit_length=want)
             return
         var cap = (self.hist if self.csize < 0 else min(self.hist, self.csize)) + self.omax + 32
         if len(self.out) < cap:

@@ -1,7 +1,7 @@
 # The decoding loops below follow libs/zstd/src/zstd/codec.mojo of
-# https://github.com/amarbaro/mojo-libs at commit 9dc0066 (Apache License 2.0,
-# Copyright 2026 AMARBARO; see NOTICE), modified: this file is zstd.mojo's own
-# API over the vendored encoder and decoder.
+# https://github.com/amarbaro/mojo-libs at tag zstd-v0.4.0 (commit c9779d5;
+# Apache License 2.0, Copyright 2026 AMARBARO; see NOTICE), modified: this
+# file is zstd.mojo's own API over the vendored encoder and decoder.
 """`zstd` — Zstandard (RFC 8878) compression in pure Mojo: one-shot and
 streaming compress/decompress and frame introspection, with no C library and
 no foreign calls.
@@ -103,6 +103,11 @@ def decompress_into(
     no growth, no extra allocation, no copy. For callers that already know the
     decompressed size (e.g. a Parquet page's declared uncompressed length).
     Returns the number of bytes written; empty `data` writes nothing.
+
+    `dst` may be larger than the output: the bytes of `dst` past the
+    returned count are then scratch, and up to 31 of them may be
+    overwritten (the decoder copies in 16- and 32-byte steps). Nothing past
+    the end of `dst` is ever written.
 
     Raises:
         Error: `zstd: destination buffer too small` if the frames hold more

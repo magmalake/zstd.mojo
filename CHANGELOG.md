@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Changed
+
+- The vendored codec is updated to mojo-zstd 0.4.0
+  ([amarbaro/mojo-libs](https://github.com/amarbaro/mojo-libs) `libs/zstd`,
+  tag `zstd-v0.4.0`, from commit 9dc0066), the upstream answer to
+  amarbaro/mojo-libs#31. It is faster at level 3, mostly where the old
+  codec was furthest behind libzstd: on one M4 core, compressing 64 MiB of
+  random bytes goes from about 1.6 to 6.0 GB/s, decompressing a repeated
+  sentence from about 3.3 to 8.4 GB/s, and decompressing a few MB of text
+  or JSON 1.6-2x faster. Level 9 compresses about as fast as before
+  (faster on random input) and decompresses equally faster. Compressed
+  bytes are the same size as before. The API and its signatures are
+  unchanged.
+- `decompress_into` decodes in 16- and 32-byte steps like the rest of the
+  decoder, copying exactly only within 32 bytes of the end of `dst`: it
+  still never writes past `dst`, but when `dst` is larger than the output,
+  up to 31 bytes past the returned count may be overwritten.
+
 ## 0.3.0 - 2026-11-25
 
 ### Changed
