@@ -174,7 +174,7 @@ are within 1% of libzstd's size at level 3 and 2.5% at level 9.
   libzstd refuses them by default.
 - Frames are valid zstd, decoded by any zstd, but not byte-identical to
   libzstd's.
-- Builds on one pinned Mojo nightly, `mojo-compiler ==1.3.0.dev2026112505`;
+- Builds on one pinned Mojo nightly, `mojo-compiler ==1.3.0.dev2026112605`;
   a workspace that consumes the package needs that same pin.
 
 ## License
