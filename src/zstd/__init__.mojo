@@ -62,7 +62,14 @@ def compress(data: Span[UInt8, _], level: Int = 3) raises -> List[UInt8]:
     """
     if len(data) >= 1 << 31:
         return _compress_stream(data, level)
-    return compress_all(data, level)
+    var out = compress_all(data, level)
+    # The encoder reserves room for input that doesn't compress. A caller that
+    # keeps many frames (a Parquet writer's pages) shouldn't keep that too.
+    if out.capacity() > len(out) + len(out) // 4 + 4096:
+        var tight = List[UInt8](capacity=len(out))
+        tight.extend(Span(out))
+        return tight^
+    return out^
 
 
 def decompress(data: Span[UInt8, _]) raises -> List[UInt8]:

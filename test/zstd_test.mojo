@@ -363,6 +363,20 @@ def _test_decompress_into_exact_buffer() raises:
     print("decompress_into stays inside its buffer")
 
 
+def _test_compress_capacity() raises:
+    """compress() gives back the encoder's reserve: a small frame of a large
+    input doesn't keep a buffer the size of the input."""
+    var data = _make_compressible(1_000_000)
+    for level in [1, 3, 9]:
+        var comp = compress(Span(data), level)
+        if comp.capacity() > len(comp) + len(comp) // 4 + 4096:
+            raise Error(
+                "level " + String(level) + ": " + String(len(comp)) + " bytes in a buffer of " + String(comp.capacity())
+            )
+        _assert_bytes_equal(Span(decompress(Span(comp))), Span(data), "capacity round trip")
+    print("compress keeps little spare capacity")
+
+
 def main() raises:
     _test_edge_sizes()
     _test_known_frame()
@@ -371,4 +385,5 @@ def main() raises:
     _test_frames_and_streams()
     _test_checksum_in_later_chunk()
     _test_decompress_into_exact_buffer()
+    _test_compress_capacity()
     print("zstd.mojo: all tests passed")

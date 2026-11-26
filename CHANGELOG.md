@@ -19,6 +19,9 @@
   decoder, copying exactly only within 32 bytes of the end of `dst`: it
   still never writes past `dst`, but when `dst` is larger than the output,
   up to 31 bytes past the returned count may be overwritten.
+- `compress()` returns a list with little spare capacity: the encoder's
+  reserve for incompressible input is given back when the frame is much
+  smaller than it.
 
 ## 0.3.0 - 2026-11-25
 
