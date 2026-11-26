@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-11-26
+
 ### Changed
 
 - The vendored codec is updated to mojo-zstd 0.4.0
