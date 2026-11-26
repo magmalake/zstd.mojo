@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/compress.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed; Zenc appends to its `out` buffer instead of writing a file (no FileHandle); the encode_blocks loop tests at the top.
 """zstd compression driver: level parameters (libzstd's clevels.h), the window buffer, frame header, block loop,
@@ -168,6 +168,17 @@ def rebase(mut e: Enc):
     e.boff -= corr
 
 
+@no_inline
+def _raw(mut e: Enc, p: ImmPointer[UInt8, _], pos: Int, bn: Int, mut out: List[UInt8], last: Bool, r0: Int, r1: Int, r2: Int) -> Bool:
+    """A block with no match and flat bytes is raw whatever the entropy coders would say: append it, or False."""
+    if not e.flat(p.unsafe_offset(pos), bn):
+        return False
+    var n0 = len(out)
+    out.resize(unsafe_uninit_length=n0 + 3 + bn)
+    e.savings += bn - e.raw_block(p.unsafe_offset(pos), bn, out.unsafe_ptr().unsafe_offset(n0), last, r0, r1, r2)
+    return True
+
+
 def encode_blocks(mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, last: Bool, mut out: List[UInt8]):
     """Compresses p[start:end] (p[:start] is history) as blocks of at most 128 KiB, appended to out; the last
     one carries the last-block bit when `last`. start < end."""
@@ -190,6 +201,9 @@ def encode_blocks(mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, las
         var n0 = len(out)
         if bn >= 16:
             var anchor = parse(e, p, pos, pos + bn)
+            if e.nseq == 0 and _raw(e, p, pos, bn, out, is_last, r0, r1, r2):
+                pos += bn
+                continue
             var tail = pos + bn - anchor
             if e.nlit + tail + 64 > len(e.lits):
                 e.lits.resize(unsafe_uninit_length=e.nlit + tail + 64 + len(e.lits))
@@ -216,7 +230,7 @@ def compress_all(data: Span[UInt8, _], level: Int) raises -> List[UInt8]:
     var e = Enc()
     set_params(e, level, n)
     var out = List[UInt8]()
-    out.reserve(n // 2 + 64)
+    out.reserve(n + n // 8 + 1024)
     put_header(out, e.wlog, n, True)
     e.savings = -len(out)
     var p = data.unsafe_ptr().unsafe_mut_cast[False]()

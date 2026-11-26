@@ -10,6 +10,9 @@
     raises, and Decompressor.finish() raises on a stream cut inside a frame
   - concatenated frames, out-of-range levels, Compressor output before
     finish() and a Compressor reused after finish()
+  - Decompressor waits for a checksum that arrives in a later update() than
+    the last block (a local fix over upstream), and decompress_into never
+    writes past an exactly sized destination
 
 test/cli_test.sh checks the same API against the `zstd` command-line tool.
 """
@@ -290,10 +293,97 @@ def _test_frames_and_streams() raises:
     print("frames and streams OK")
 
 
+def _test_checksum_in_later_chunk() raises:
+    """Regression (local fix over upstream): a frame whose 4-byte checksum
+    arrives in a later update() than its last block decodes; upstream's push
+    parser raised `zstd: truncated input` there."""
+    var data = _make_compressible(200_000)
+    var comp = compress(data, 3)
+    for cut in [4, 3, 2, 1]:
+        var d = Decompressor()
+        var back = d.update(Span(comp)[: len(comp) - cut])
+        back.extend(d.update(Span(comp)[len(comp) - cut :]))
+        back.extend(d.finish())
+        _assert_bytes_equal(
+            back, data, "checksum cut " + String(cut) + " bytes from the end"
+        )
+    # Every split point of a small frame, in two update() calls.
+    var small = compress(_make_compressible(3000), 3)
+    var want = decompress(small)
+    for k in range(len(small) + 1):
+        var d = Decompressor()
+        var back = d.update(Span(small)[:k])
+        back.extend(d.update(Span(small)[k:]))
+        back.extend(d.finish())
+        _assert_bytes_equal(back, want, "split at " + String(k))
+    print("checksum in a later chunk OK")
+
+
+def _mixed(n: Int, seed_value: Int) -> List[UInt8]:
+    """Short random runs and short repeats at small and large offsets: many
+    sequences with short literals and overlapping matches, up to the end."""
+    seed(seed_value)
+    var out = List[UInt8](capacity=n + 64)
+    while len(out) < n:
+        var lit = Int(random_ui64(0, 12))
+        for _ in range(lit):
+            out.append(UInt8(random_ui64(97, 122)))
+        if len(out) > 40:
+            var off = Int(random_ui64(1, 40 if random_ui64(0, 1) == 0 else UInt64(len(out) - 1)))
+            var ml = Int(random_ui64(3, 70))
+            for _ in range(ml):
+                out.append(out[len(out) - off])
+    out.resize(n, 0)
+    return out^
+
+
+def _test_decompress_into_exact_buffer() raises:
+    """decompress_into writes nothing past the caller's buffer, even though
+    the decoder's 16- and 32-byte copies overshoot the output inside its own
+    buffers: the bytes after an exactly sized destination stay untouched."""
+    comptime GUARD = 64
+    var inputs = List[List[UInt8]]()
+    inputs.append(_make_compressible(100_000))
+    inputs.append(_mixed(300_000, 5))
+    inputs.append(_mixed(1000, 6))
+    inputs.append(_make_random(50_000, 8))
+    for i in range(len(inputs)):
+        for level in [1, 3, 9, 19]:
+            var data = Span(inputs[i])
+            var comp = compress(data, level)
+            var buf = List[UInt8](length=len(data) + GUARD, fill=0xA5)
+            var n = decompress_into(comp, Span(buf)[: len(data)])
+            var label = "exact buffer, input " + String(i) + " level " + String(level)
+            if n != len(data):
+                raise Error(label + ": wrote " + String(n))
+            _assert_bytes_equal(Span(buf)[: len(data)], data, label)
+            for j in range(len(data), len(buf)):
+                if buf[j] != 0xA5:
+                    raise Error(label + ": byte " + String(j - len(data)) + " past the buffer written")
+    print("decompress_into stays inside its buffer")
+
+
+def _test_compress_capacity() raises:
+    """compress() gives back the encoder's reserve: a small frame of a large
+    input doesn't keep a buffer the size of the input."""
+    var data = _make_compressible(1_000_000)
+    for level in [1, 3, 9]:
+        var comp = compress(Span(data), level)
+        if comp.capacity() > len(comp) + len(comp) // 4 + 4096:
+            raise Error(
+                "level " + String(level) + ": " + String(len(comp)) + " bytes in a buffer of " + String(comp.capacity())
+            )
+        _assert_bytes_equal(Span(decompress(Span(comp))), Span(data), "capacity round trip")
+    print("compress keeps little spare capacity")
+
+
 def main() raises:
     _test_edge_sizes()
     _test_known_frame()
     _test_corrupt_input()
     _test_errors()
     _test_frames_and_streams()
+    _test_checksum_in_later_chunk()
+    _test_decompress_into_exact_buffer()
+    _test_compress_capacity()
     print("zstd.mojo: all tests passed")

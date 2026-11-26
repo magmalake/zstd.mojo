@@ -4,7 +4,8 @@ This software is licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text.
 
 The Zstandard codec in src/zstd/_*.mojo is vendored, with modifications, from
-mojo-zstd (https://github.com/amarbaro/mojo-libs, libs/zstd, commit 9dc0066):
+mojo-zstd 0.4.0 (https://github.com/amarbaro/mojo-libs, libs/zstd, tag zstd-v0.4.0,
+commit c9779d5):
 
   mojo-zstd
   Copyright 2026 AMARBARO · amarbaro.org labs <dev@amarbaro.org>

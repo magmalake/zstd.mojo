@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/huf.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed and an unused one dropped.
 """Huffman literals for zstd (RFC 8878; algorithms of libzstd's HUF, BSD-3-Clause, Meta Platforms and Yann Collet): the weight
@@ -84,6 +84,42 @@ def _stream(
         i += k
 
 
+def _stream4(
+    tbl: List[UInt16], log: Int, mut b1: BitD, mut b2: BitD, mut b3: BitD, mut b4: BitD, dst: MutPointer[UInt8, _], seg: Int, count: Int
+):
+    """The four streams of the fast loop (segments of seg symbols, the last of count - 3 * seg), decoded side by
+    side in rounds of 4 symbols so that the four table lookups of a round do not wait for each other."""
+    var t = tbl.unsafe_ptr()
+    var n4 = ((count - 3 * seg) >> 2) << 2
+    var d2 = dst.unsafe_offset(seg)
+    var d3 = dst.unsafe_offset(2 * seg)
+    var d4 = dst.unsafe_offset(3 * seg)
+    var i = 0
+    while i < n4:
+        _ = b1.reload()
+        _ = b2.reload()
+        _ = b3.reload()
+        _ = b4.reload()
+        for j in range(4):
+            var e1 = Int(t[unsafe_offset=b1.look(log)])
+            var e2 = Int(t[unsafe_offset=b2.look(log)])
+            var e3 = Int(t[unsafe_offset=b3.look(log)])
+            var e4 = Int(t[unsafe_offset=b4.look(log)])
+            b1.consumed += e1 >> 8
+            b2.consumed += e2 >> 8
+            b3.consumed += e3 >> 8
+            b4.consumed += e4 >> 8
+            dst[unsafe_offset=i + j] = UInt8(e1 & 255)
+            d2[unsafe_offset=i + j] = UInt8(e2 & 255)
+            d3[unsafe_offset=i + j] = UInt8(e3 & 255)
+            d4[unsafe_offset=i + j] = UInt8(e4 & 255)
+        i += 4
+    _stream(tbl, log, b1, dst.unsafe_offset(i), seg - i)
+    _stream(tbl, log, b2, d2.unsafe_offset(i), seg - i)
+    _stream(tbl, log, b3, d3.unsafe_offset(i), seg - i)
+    _stream(tbl, log, b4, d4.unsafe_offset(i), count - 3 * seg - i)
+
+
 def _checked(
     tbl: List[UInt16], log: Int, src: ImmPointer[UInt8, _], n: Int, dst: MutPointer[UInt8, _], count: Int
 ) raises:
@@ -120,10 +156,7 @@ def decode(
         var b2 = BitD(src, fast_end=e2)
         var b3 = BitD(src, fast_end=e3)
         var b4 = BitD(src, fast_end=n)
-        _stream(tbl, log, b1, dst, seg)
-        _stream(tbl, log, b2, dst.unsafe_offset(seg), seg)
-        _stream(tbl, log, b3, dst.unsafe_offset(2 * seg), seg)
-        _stream(tbl, log, b4, dst.unsafe_offset(3 * seg), count - 3 * seg)
+        _stream4(tbl, log, b1, b2, b3, b4, dst, seg, count)
         return
     _checked(tbl, log, src.unsafe_offset(6), l1, dst, seg)
     _checked(tbl, log, src.unsafe_offset(e1), l2, dst.unsafe_offset(seg), seg)

@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/finder.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed and an unused one dropped.
 """Match finders and parsers of zstd's fast, double-fast, greedy and lazy strategies (algorithms of

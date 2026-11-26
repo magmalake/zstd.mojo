@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/opt.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed.
 """Binary-tree match finder and optimal parser of zstd's btlazy2, btopt, btultra and btultra2 strategies

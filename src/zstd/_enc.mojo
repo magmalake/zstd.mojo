@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/enc.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed and unused ones dropped; the -D ZSTD_MUTANT test hook removed.
 """zstd block encoder: the sequence store, literals and sequences sections, FSE and Huffman table choice and
@@ -244,11 +244,19 @@ struct Enc(Movable):
             self.sml.resize(unsafe_uninit_length=cap)
         if self.nlit + ll + 64 > len(self.lits):
             self.lits.resize(unsafe_uninit_length=max(self.nlit + ll + 64, 2 * len(self.lits)))
-        unsafe_memcpy(dest=self.lits.unsafe_ptr().unsafe_offset(self.nlit), src=src.unsafe_offset(anchor), count=ll)
+        var dl = self.lits.unsafe_ptr().unsafe_offset(self.nlit)
+        var rd = (ll + 15) & -16
+        if ll <= 64 and rd <= ll + ml:
+            # 16-byte steps: they read up to the next multiple of 16, which the match that follows the run covers,
+            # and write into the 64 spare bytes after the literals
+            for i in range(0, ll, 16):
+                dl.unsafe_offset(i).unsafe_store[alignment=1](src.unsafe_offset(anchor + i).unsafe_load[width=16, alignment=1]())
+        else:
+            unsafe_memcpy(dest=dl, src=src.unsafe_offset(anchor), count=ll)
         self.nlit += ll
-        self.sll[self.nseq] = UInt32(ll)
-        self.sof[self.nseq] = UInt32(code)
-        self.sml[self.nseq] = UInt32(ml - 3)
+        self.sll.unsafe_ptr()[unsafe_offset=self.nseq] = UInt32(ll)
+        self.sof.unsafe_ptr()[unsafe_offset=self.nseq] = UInt32(code)
+        self.sml.unsafe_ptr()[unsafe_offset=self.nseq] = UInt32(ml - 3)
         self.nseq += 1
         if code > 3:
             self.r2 = self.r1
@@ -293,6 +301,8 @@ struct Enc(Movable):
             top = max(top, cnt[s])
         if top == n and n > 1:  # one byte value
             return self._lit_small(dst, 1, n, Int(src[unsafe_offset=0]))
+        if top <= (n >> 7) + 4:  # libzstd's HUF heuristic: too flat for Huffman to pay, skip building it
+            return self._lit_small(dst, 0, n, 0)
         var min_lit = 6 if self.phuf_ok else 8  # libzstd waits for 8 << (9 - strategy) bytes; trying is cheap and costs no ratio
         if n >= min_lit:
             var minlog = (self.strat - 1) if self.strat >= 8 else 6
@@ -598,6 +608,45 @@ struct Enc(Movable):
             dst[unsafe_offset=3] = src[unsafe_offset=0]
             return 4
         var h = lastbit | (n << 3)
+        dst[unsafe_offset=0] = UInt8(h & 255)
+        dst[unsafe_offset=1] = UInt8((h >> 8) & 255)
+        dst[unsafe_offset=2] = UInt8((h >> 16) & 255)
+        unsafe_memcpy(dest=dst.unsafe_offset(3), src=src, count=n)
+        return 3 + n
+
+    @no_inline
+    def flat(self, src: ImmPointer[UInt8, _], n: Int) -> Bool:
+        """True when three 4 KiB samples (head, middle, tail) are each too flat for Huffman to pay: the bound of
+        literals(), checked on a sample as libzstd does for suspected incompressible data."""
+        if n < 3 * 4096:
+            return False
+        var c = List[Int](length=1024, fill=0)  # four interleaved histograms: no dependency between neighbours
+        var h = c.unsafe_ptr()
+        for s in range(3):
+            var q = src.unsafe_offset(0 if s == 0 else (n // 2 - 2048 if s == 1 else n - 4096))
+            for i in range(1024):
+                h[unsafe_offset=i] = 0
+            for i in range(0, 4096, 4):
+                h[unsafe_offset=Int(q[unsafe_offset=i])] += 1
+                h[unsafe_offset=256 + Int(q[unsafe_offset=i + 1])] += 1
+                h[unsafe_offset=512 + Int(q[unsafe_offset=i + 2])] += 1
+                h[unsafe_offset=768 + Int(q[unsafe_offset=i + 3])] += 1
+            for i in range(256):
+                if h[unsafe_offset=i] + h[unsafe_offset=256 + i] + h[unsafe_offset=512 + i] + h[unsafe_offset=768 + i] > (4096 >> 7) + 4:
+                    return False
+        return True
+
+    @no_inline
+    def raw_block(
+        mut self, src: ImmPointer[UInt8, _], n: Int, dst: MutPointer[UInt8, _], last: Bool, r0: Int, r1: Int, r2: Int
+    ) -> Int:
+        """A raw block of src[0:n] with its 3-byte header at dst; returns 3 + n. The repeat offsets go back to
+        r0..r2, the ones from before the block."""
+        self.first = False
+        self.r0 = r0
+        self.r1 = r1
+        self.r2 = r2
+        var h = (1 if last else 0) | (n << 3)
         dst[unsafe_offset=0] = UInt8(h & 255)
         dst[unsafe_offset=1] = UInt8((h >> 8) & 255)
         dst[unsafe_offset=2] = UInt8((h >> 16) & 255)

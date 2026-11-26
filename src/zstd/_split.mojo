@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/split.mojo at
-# commit 9dc0066. Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed.
 """Pre-split of a 128 KiB block where the statistics change (libzstd's zstd_preSplit.c: hash fingerprints of 8 KiB
@@ -18,20 +18,23 @@ def _hash2(p: ImmPointer[UInt8, _], i: Int, bits: Int) -> Int:
 
 def _record(mut fp: List[Int], p: ImmPointer[UInt8, _], off: Int, n: Int, rate: Int, bits: Int) -> Int:
     """Events of p[off:off+n] sampled every `rate` bytes into fp; returns their count as libzstd tallies it."""
+    var f = fp.unsafe_ptr()
     for i in range(1 << bits):
-        fp[i] = 0
+        f[unsafe_offset=i] = 0
     var limit = n - 1
     var k = 0
     while k < limit:
-        fp[_hash2(p, off + k, bits)] += 1
+        f[unsafe_offset=_hash2(p, off + k, bits)] += 1
         k += rate
     return limit // rate
 
 
 def _dist(f1: List[Int], n1: Int, f2: List[Int], n2: Int, bits: Int) -> Int:
     var d = 0
+    var a = f1.unsafe_ptr()
+    var b = f2.unsafe_ptr()
     for i in range(1 << bits):
-        var x = f1[i] * n2 - f2[i] * n1
+        var x = a[unsafe_offset=i] * n2 - b[unsafe_offset=i] * n1
         d += -x if x < 0 else x
     return d
 
@@ -71,8 +74,10 @@ def split_block(p: ImmPointer[UInt8, _], at: Int, size: Int, level: Int) -> Int:
         var nnew = _record(new, p, at + pos, _CHUNK, rate, bits)
         if _differs(past, npast, new, nnew, penalty, bits):
             return pos
+        var pp = past.unsafe_ptr()
+        var nn = new.unsafe_ptr()
         for i in range(1 << bits):
-            past[i] += new[i]
+            pp[unsafe_offset=i] += nn[unsafe_offset=i]
         npast += nnew
         if penalty > 0:
             penalty -= 1
