@@ -1,5 +1,5 @@
 # The decoding loops below follow libs/zstd/src/zstd/codec.mojo of
-# https://github.com/amarbaro/mojo-libs at tag zstd-v0.4.0 (commit c9779d5;
+# https://github.com/amarbaro/mojo-libs at tag zstd-v0.4.1 (commit 72d4eaf;
 # Apache License 2.0, Copyright 2026 AMARBARO; see NOTICE), modified: this
 # file is zstd.mojo's own API over the vendored encoder and decoder.
 """`zstd` — Zstandard (RFC 8878) compression in pure Mojo: one-shot and

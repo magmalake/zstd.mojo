@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/block.mojo at
-# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.1 (commit 72d4eaf). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed; the -D ZSTD_MUTANT test hook removed; decode_block takes the end of the caller's buffer (dend), raises too_small() past it and copies exactly
 # (no wide copies past the sequence) within 32 bytes of it.

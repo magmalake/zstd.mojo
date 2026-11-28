@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/xxh64.mojo at
-# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.1 (commit 72d4eaf). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of xxHash (BSD 2-Clause, Yann Collet), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed.
 """xxHash64 (BSD-2-Clause, Yann Collet), incremental, little endian: the zstd content checksum."""

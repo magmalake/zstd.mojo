@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Changed
+
+- The vendored codec is updated to mojo-zstd 0.4.1
+  ([amarbaro/mojo-libs](https://github.com/amarbaro/mojo-libs) `libs/zstd`,
+  tag `zstd-v0.4.1`), the upstream answer to amarbaro/mojo-libs#34. Levels
+  5 to 12 use libzstd's row-based match finder: on one M4 core, level 9
+  compresses 64 MiB of random bytes at about 5.9 GB/s (was 0.9), a
+  repeated sentence 1.5x faster, and a few MB of text, JSON or an
+  executable 1.3-1.6x faster, which is within 10% of the `zstd` tool on
+  that real data. Level 9 frames of binary and JSON input are 2-3%
+  smaller. Level 3 and the decoder are unchanged, and so is the API.
+
 ## 0.4.0 - 2026-11-26
 
 ### Changed

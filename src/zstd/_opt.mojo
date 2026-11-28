@@ -1,11 +1,11 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/opt.mojo at
-# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.1 (commit 72d4eaf). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed.
 """Binary-tree match finder and optimal parser of zstd's btlazy2, btopt, btultra and btultra2 strategies
 (algorithms of libzstd's zstd_opt.c and the BT part of zstd_lazy.c; BSD-3-Clause, Meta Platforms and Yann Collet)."""
 from ._enc import Enc
-from ._finder import count, hashm, hc_find, r32
+from ._finder import count, hashm, hc_find, r32, row_fill, row_find
 from ._fse import hb
 
 comptime OPT_NUM = 1 << 12
@@ -533,22 +533,42 @@ def opt_parse(mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, lvl: In
 
 
 @always_inline
-def _find[bt: Bool](mut e: Enc, p: ImmPointer[UInt8, _], ip: Int, end: Int, mut off: Int) -> Int:
-    comptime if bt:
+def _find[fm: Int](mut e: Enc, p: ImmPointer[UInt8, _], ip: Int, end: Int, mut off: Int) -> Int:
+    comptime if fm == 1:
         return bt_find(e, p, ip, end, off)
-    else:
+    elif fm == 0:
         return hc_find(e, p, ip, end, off)
+    else:
+        return row_find[fm](e, p, ip, end, off)
 
 
-def lazy[bt: Bool](mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, depth: Int) -> Int:
-    """ZSTD_compressBlock_lazy_generic: greedy (depth 0), lazy (1) or lazy2 (2) over the hash-chain finder, or the
-    binary tree when bt (btlazy2)."""
-    var ilimit = end - 8
+@always_inline
+def _ob(off: Int) -> Int:
+    """libzstd's ZSTD_highbit32(offBase), the offset cost in its lazy gains: 0 for the repeat offset (off 0)."""
+    return hb(off + 3) if off > 0 else 0
+
+
+@always_inline
+def _unskip[fm: Int](mut e: Enc, p: ImmPointer[UInt8, _], lim: Int):
+    """A match ends libzstd's lazy skipping; the row finder's hash cache restarts at the next position to enter."""
+    comptime if fm >= 4:
+        if e.skip:
+            row_fill[fm](e, p, lim)
+    e.skip = False
+
+
+def lazy[fm: Int](mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, depth: Int) -> Int:
+    """ZSTD_compressBlock_lazy_generic: greedy (depth 0), lazy (1) or lazy2 (2) over the finder fm: 0 the hash
+    chain, 1 the binary tree (btlazy2), 4 to 6 the row finder with rows of 1 << fm entries."""
+    var ilimit = end - (16 if fm >= 4 else 8)  # the row finder hashes 8 positions ahead
     var ip = start
     var anchor = start
     var maxd = 1 << e.wlog
     if start + e.boff == 0:
         ip += 1
+    e.skip = False
+    comptime if fm >= 4:
+        row_fill[fm](e, p, ilimit)
     while ip < ilimit:
         var ml = 0
         var off = 0  # distance of the best match; 0 stands for the first repeat offset
@@ -560,6 +580,7 @@ def lazy[bt: Bool](mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, de
                 e.store(p, anchor, st - anchor, r1, ml)
                 ip = st + ml
                 anchor = ip
+                _unskip[fm](e, p, ilimit)
                 while ip <= ilimit and ip - e.r1 >= max(0, ip - maxd) and r32(p, ip) == r32(p, ip - e.r1):
                     var r2 = e.r1
                     var ml2 = count(p, ip + 4, ip + 4 - r2, end) + 4
@@ -568,29 +589,32 @@ def lazy[bt: Bool](mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, de
                     anchor = ip
                 continue
         var o2 = 0
-        var ml2 = _find[bt](e, p, ip, end, o2)
+        var ml2 = _find[fm](e, p, ip, end, o2)
         if ml2 > ml:
             ml = ml2
             st = ip
             off = o2
         if ml < 4:
-            ip += ((ip - anchor) >> 8) + 1
+            # libzstd's lazy skipping: past 2 KiB without a match the step exceeds 8 and only searched
+            # positions are inserted, until the next match
+            var step = ((ip - anchor) >> 8) + 1
+            ip += step
+            e.skip = step > 8
             continue
         if depth >= 1:
             while ip < ilimit:
                 ip += 1
-                if off > 0 and ip - r1 >= max(0, ip - maxd) and r32(p, ip) == r32(p, ip - r1):
+                if ip - r1 >= max(0, ip - maxd) and r32(p, ip) == r32(p, ip - r1):
                     var mr = count(p, ip + 4, ip + 4 - r1, end) + 4
                     var g2 = mr * 3
-                    var gain1 = ml * 3 - hb(off + 3) + 1
+                    var gain1 = ml * 3 - _ob(off) + 1
                     if mr >= 4 and g2 > gain1:
                         ml = mr
                         off = 0
                         st = ip
                 var o3 = 0
-                var m3 = _find[bt](e, p, ip, end, o3)
-                var cur = off if off > 0 else r1
-                var g1 = ml * 4 - hb(cur + 3) + 4
+                var m3 = _find[fm](e, p, ip, end, o3)
+                var g1 = ml * 4 - _ob(off) + 4
                 var g3 = m3 * 4 - hb(o3 + 3)
                 if m3 >= 4 and g3 > g1:
                     ml = m3
@@ -599,19 +623,18 @@ def lazy[bt: Bool](mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, de
                     continue
                 if depth == 2 and ip < ilimit:
                     ip += 1
-                    if off > 0 and ip - r1 >= max(0, ip - maxd) and r32(p, ip) == r32(p, ip - r1):
+                    if ip - r1 >= max(0, ip - maxd) and r32(p, ip) == r32(p, ip - r1):
                         var mr = count(p, ip + 4, ip + 4 - r1, end) + 4
                         var g2 = mr * 4
-                        var gg1 = ml * 4 - hb(off + 3) + 1
+                        var gg1 = ml * 4 - _ob(off) + 1
                         if mr >= 4 and g2 > gg1:
                             ml = mr
                             off = 0
                             st = ip
                     var o4 = 0
-                    var m4 = _find[bt](e, p, ip, end, o4)
-                    var cur2 = off if off > 0 else r1
+                    var m4 = _find[fm](e, p, ip, end, o4)
                     var g4 = m4 * 4 - hb(o4 + 3)
-                    var g1b = ml * 4 - hb(cur2 + 3) + 7
+                    var g1b = ml * 4 - _ob(off) + 7
                     if m4 >= 4 and g4 > g1b:
                         ml = m4
                         off = o4
@@ -626,6 +649,7 @@ def lazy[bt: Bool](mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int, de
         e.store(p, anchor, st - anchor, dist, ml)
         ip = st + ml
         anchor = ip
+        _unskip[fm](e, p, ilimit)
         while ip <= ilimit and ip - e.r1 >= max(0, ip - maxd) and r32(p, ip) == r32(p, ip - e.r1):
             var r2 = e.r1
             var ml3 = count(p, ip + 4, ip + 4 - r2, end) + 4

@@ -1,5 +1,5 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/compress.mojo at
-# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.1 (commit 72d4eaf). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
 # Modified for zstd.mojo: imports renamed; Zenc appends to its `out` buffer instead of writing a file (no FileHandle); the encode_blocks loop tests at the top.
 """zstd compression driver: level parameters (libzstd's clevels.h), the window buffer, frame header, block loop,
@@ -87,7 +87,17 @@ def set_params(mut e: Enc, level: Int, size: Int):
     e.clog = max(e.clog, 6)
     e.ht = List[UInt32](length=1 << e.hlog, fill=0)
     e.ct = List[UInt32]()
-    if e.strat >= 2:
+    e.tt = List[UInt8]()
+    e.rlog = 0
+    if e.strat >= 3 and e.strat <= 5 and e.wlog > 14:
+        # libzstd's row finder replaces the hash chain for greedy, lazy and lazy2 on windows over 16 KiB
+        # 16 entries of ht are one cache line: both tables get slack so that their rows can start on one
+        e.rlog = min(max(e.slog, 4), 6)
+        e.ht = List[UInt32](length=(1 << e.hlog) + 16, fill=0)
+        e.tt = List[UInt8](length=(1 << e.hlog) + 64, fill=0)
+        e.ha = ((64 - (Int(e.ht.unsafe_ptr()) & 63)) & 63) >> 2
+        e.ta = (64 - (Int(e.tt.unsafe_ptr()) & 63)) & 63
+    elif e.strat >= 2:
         e.ct = List[UInt32](length=1 << e.clog, fill=0)
     if e.strat >= 6:
         e.o.alloc()
@@ -104,9 +114,15 @@ def parse(mut e: Enc, p: ImmPointer[UInt8, _], start: Int, end: Int) -> Int:
     if e.strat == 2:
         return dfast(e, p, start, end)
     if e.strat <= 5:
-        return lazy[False](e, p, start, end, 0 if e.strat == 3 else (1 if e.strat == 4 else 2))
+        if e.rlog == 4:
+            return lazy[4](e, p, start, end, e.strat - 3)
+        if e.rlog == 5:
+            return lazy[5](e, p, start, end, e.strat - 3)
+        if e.rlog == 6:
+            return lazy[6](e, p, start, end, e.strat - 3)
+        return lazy[0](e, p, start, end, e.strat - 3)
     if e.strat == 6:
-        return lazy[True](e, p, start, end, 2)
+        return lazy[1](e, p, start, end, 2)
     if e.strat == 9 and e.boff + start == 0 and e.o.llsum == 0 and end - start > 8:
         # btultra2: a first pass over the block only to learn the statistics, then parse again without history
         var r0 = e.r0
@@ -245,6 +261,10 @@ def compress_all(data: Span[UInt8, _], level: Int) raises -> List[UInt8]:
     var d = Int(h.digest() & 0xFFFFFFFF)
     for k in range(4):
         out.append(UInt8((d >> (8 * k)) & 255))
+    if out.capacity() > len(out) + len(out) // 4 + 4096:  # the worst-case reserve is not the caller's to hold
+        var fit = List[UInt8](capacity=len(out))
+        fit.extend(Span(out))
+        return fit^
     return out^
 
 

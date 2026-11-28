@@ -1,11 +1,13 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/finder.mojo at
-# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.1 (commit 72d4eaf). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
-# Modified for zstd.mojo: imports renamed and an unused one dropped.
+# Modified for zstd.mojo: imports renamed and an unused one dropped; row_insert takes its table pointers again after row_fill, for Mojo 1.3's origin check.
 """Match finders and parsers of zstd's fast, double-fast, greedy and lazy strategies (algorithms of
 libzstd's zstd_fast.c, zstd_double_fast.c, zstd_lazy.c; BSD-3-Clause, Meta Platforms and Yann Collet). Positions are offsets
 into the buffer p; table entries are pos + e.boff, 0 meaning empty."""
 from std.bit import count_trailing_zeros
+from std.memory import pack_bits
+from std.sys import PrefetchOptions, prefetch
 from ._enc import Enc
 
 
@@ -233,6 +235,8 @@ def hc_insert(mut e: Enc, p: ImmPointer[UInt8, _], upto: Int):
         ct[unsafe_offset=(i + boff) & cmask] = ht[unsafe_offset=h]
         ht[unsafe_offset=h] = UInt32(i + boff)
         i += 1
+        if e.skip:
+            break
     e.upd = max(e.upd, upto)
 
 
@@ -263,4 +267,130 @@ def hc_find(mut e: Enc, p: ImmPointer[UInt8, _], ip: Int, end: Int, mut off: Int
         if m <= minchain:
             break
         idx = Int(ct[unsafe_offset=idx & cmask])
+    return best if best >= 4 else 0
+
+
+@always_inline
+def row_put(ht: MutPointer[UInt32, _], tt: MutPointer[UInt8, _], rel: Int, rmask: Int, h: Int, v: Int):
+    """ZSTD_row_nextIndex and the store: the head byte tt[rel] steps down through rmask..1 (slot 0 never holds an
+    entry), so the newest entry of a row sits at its head and older ones follow it upward."""
+    var nxt = (Int(tt[unsafe_offset=rel]) - 1) & rmask
+    if nxt == 0:
+        nxt = rmask
+    tt[unsafe_offset=rel] = UInt8(nxt)
+    tt[unsafe_offset=rel + nxt] = UInt8(h & 255)
+    ht[unsafe_offset=rel + nxt] = UInt32(v)
+
+
+@always_inline
+def row_hash[rl: Int](ht: MutPointer[UInt32, _], tt: MutPointer[UInt8, _], p: ImmPointer[UInt8, _], i: Int, bits: Int, mls: Int) -> Int:
+    """The row hash of position i (row number above 8 tag bits); its row is prefetched (ZSTD_row_prefetch)."""
+    var h = hashm(p, i, bits, mls)
+    var rel = (h >> 8) << rl
+    prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](ht.unsafe_offset(rel))
+    comptime if rl >= 5:
+        prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](ht.unsafe_offset(rel + 16))
+    prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](tt.unsafe_offset(rel))
+    comptime if rl == 6:
+        prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](tt.unsafe_offset(rel + 32))
+    return h
+
+
+def row_fill[rl: Int](mut e: Enc, p: ImmPointer[UInt8, _], lim: Int):
+    """ZSTD_row_fillHashCache: the hashes of the next 8 positions to enter the rows (none past lim) go to the
+    cache, their rows prefetched. row_insert and row_find then keep the cache 8 positions ahead, so a row is
+    in the cache by the time it is written or searched."""
+    var ht = e.ht.unsafe_ptr().unsafe_offset(e.ha)
+    var tt = e.tt.unsafe_ptr().unsafe_offset(e.ta)
+    var hc = e.hcache.unsafe_ptr()
+    var bits = e.hlog - rl + 8
+    var mls = min(max(e.mml, 4), 6)
+    for i in range(e.upd, e.upd + min(8, lim - e.upd + 1)):
+        hc[unsafe_offset=i & 7] = UInt32(row_hash[rl](ht, tt, p, i, bits, mls))
+
+
+def row_insert[rl: Int](mut e: Enc, p: ImmPointer[UInt8, _], upto: Int):
+    """ZSTD_row_update_internal: enters the positions below upto not yet in the rows; of a stretch over 384
+    positions (a long match) only the first 96 and the last 32. Reads up to 16 bytes past upto."""
+    var ht = e.ht.unsafe_ptr().unsafe_offset(e.ha)
+    var tt = e.tt.unsafe_ptr().unsafe_offset(e.ta)
+    var hc = e.hcache.unsafe_ptr()
+    var bits = e.hlog - rl + 8
+    var mls = min(max(e.mml, 4), 6)
+    var boff = e.boff
+    var i = e.upd
+    var stop = i + 96 if upto - i > 384 else upto
+    while True:
+        while i < stop:
+            var nh = row_hash[rl](ht, tt, p, i + 8, bits, mls)
+            var h = Int(hc[unsafe_offset=i & 7])
+            hc[unsafe_offset=i & 7] = UInt32(nh)
+            row_put(ht, tt, (h >> 8) << rl, (1 << rl) - 1, h, i + boff)
+            i += 1
+        if stop >= upto:
+            break
+        i = upto - 32
+        stop = upto
+        e.upd = i
+        row_fill[rl](e, p, upto + 1)
+        # zstd.mojo: row_fill borrows e mutably, which ends the pointers taken from it above (Mojo 1.3 rejects their reuse)
+        ht = e.ht.unsafe_ptr().unsafe_offset(e.ha)
+        tt = e.tt.unsafe_ptr().unsafe_offset(e.ta)
+        hc = e.hcache.unsafe_ptr()
+    e.upd = max(e.upd, upto)
+
+
+def row_find[rl: Int](mut e: Enc, p: ImmPointer[UInt8, _], ip: Int, end: Int, mut off: Int) -> Int:
+    """ZSTD_RowFindBestMatch: ht is rows of 1 << rl entries. One SIMD compare of a row's tag bytes (8 more hash
+    bits per entry) picks the entries worth reading, newest first, at most 1 << min(slog, rl) of them. The longest
+    match at ip, its distance in off; 0 when there is none of 4 bytes or more. Needs ip + 16 <= end."""
+    comptime W = 1 << rl
+    var bits = e.hlog - rl + 8
+    var mls = min(max(e.mml, 4), 6)
+    var h: Int
+    if e.skip:
+        e.upd = ip
+        h = hashm(p, ip, bits, mls)
+    else:
+        row_insert[rl](e, p, ip)
+        var hc = e.hcache.unsafe_ptr()
+        h = Int(hc[unsafe_offset=ip & 7])
+        hc[unsafe_offset=ip & 7] = UInt32(row_hash[rl](e.ht.unsafe_ptr().unsafe_offset(e.ha), e.tt.unsafe_ptr().unsafe_offset(e.ta), p, ip + 8, bits, mls))
+    var ht = e.ht.unsafe_ptr().unsafe_offset(e.ha)
+    var tt = e.tt.unsafe_ptr().unsafe_offset(e.ta)
+    var boff = e.boff
+    var rel = (h >> 8) << rl
+    var head = Int(tt[unsafe_offset=rel]) & (W - 1)
+    var m = UInt64(pack_bits(tt.unsafe_offset(rel).unsafe_load[width=W]().eq(SIMD[DType.uint8, W](UInt8(h & 255)))))
+    # bit k after the rotation is slot (head + k) mod W: the scan runs from the newest entry to the oldest
+    m = ((m >> UInt64(head)) | (m << UInt64((W - head) & 63))) & (UInt64(0xFFFFFFFFFFFFFFFF) >> UInt64(64 - W))
+    var low = max(0, ip - (1 << e.wlog))
+    var store = Array[Int, W](uninitialized=True)
+    var cand = store.unsafe_ptr()  # at most W - 1 entries: slot 0 is never one
+    var n = 0
+    var attempts = 1 << min(e.slog, rl)
+    while m != 0 and attempts > 0:
+        var slot = (head + Int(count_trailing_zeros(m))) & (W - 1)
+        m &= m - 1
+        if slot == 0:
+            continue
+        var idx = Int(ht[unsafe_offset=rel + slot])
+        if idx == 0 or idx - boff < low or idx - boff >= ip:
+            break
+        prefetch[PrefetchOptions().for_read().high_locality().to_data_cache()](p.unsafe_offset(idx - boff))
+        cand[unsafe_offset=n] = idx - boff
+        n += 1
+        attempts -= 1
+    row_put(ht, tt, rel, W - 1, h, ip + boff)
+    e.upd = ip + 1
+    var best = 3
+    for k in range(n):
+        var c = cand[unsafe_offset=k]
+        if r32(p, c + best - 3) == r32(p, ip + best - 3):
+            var cur = count(p, ip, c, end)
+            if cur > best:
+                best = cur
+                off = ip - c
+                if ip + cur >= end:
+                    break
     return best if best >= 4 else 0
