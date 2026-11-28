@@ -1,8 +1,7 @@
 # Vendored from https://github.com/amarbaro/mojo-libs, libs/zstd/src/zstd/decode.mojo at
-# tag zstd-v0.4.0 (commit c9779d5). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
+# tag zstd-v0.4.1 (commit 72d4eaf). Copyright 2026 AMARBARO, licensed under the Apache License 2.0
 # (see LICENSE); a port to Mojo of Zstandard (BSD, Meta Platforms, Inc. and affiliates), whose notice is in NOTICE.
-# Modified for zstd.mojo: imports renamed; Zdec can decode straight into a caller's buffer (Zdec(dst=...)), raising too_small() when it is full;
-# parse() waits for a last block's checksum instead of raising when it hasn't arrived yet.
+# Modified for zstd.mojo: imports renamed; Zdec can decode straight into a caller's buffer (Zdec(dst=...)), raising too_small() when it is full.
 """zstd frame decoder: a push parser. parse() takes the bytes available and decodes every complete unit
 (frame header, block, checksum) in them, so the caller can hand it a file chunk by chunk or a whole buffer."""
 from std.memory import unsafe_memcpy, unsafe_memmove, unsafe_memset
@@ -199,7 +198,7 @@ struct Zdec(Movable):
                 # libzstd decodes a frame of known small size in one pass, which rejects an empty compressed
                 # block (no literals section); its streaming path, taken otherwise, lets it through
                 raise bad("corrupt input")
-            # the last block is decoded together with the checksum after it: wait for both
+            # the last block waits for its checksum too, so a chunked caller never sees the block without it
             if n - ip - 3 < take + (4 if last == 1 and self.cksum else 0):
                 return ip
             if take > 0:
